@@ -78,6 +78,9 @@ You can leave out any setting to keep its default. The script also allows whole 
 - Keys, settings, the day-trading state and the trade journal are stored only on your computer in `~/.amh-trader/`.
 - Every check uses Claude, which costs money if you use an API key. That's about 26 calls per day at the default 15-minute interval.
 
+## NinjaTrader 8: Gold ORB
+`ninjatrader/` holds a rules-based gold opening range breakout strategy for NinjaTrader 8 (futures, Windows). It runs on its own, without Claude. See [ninjatrader/README.md](ninjatrader/README.md) for a beginner's guide to installing and testing it.
+
 ## Tests
 ```bash
 python -m unittest test_trader.py
