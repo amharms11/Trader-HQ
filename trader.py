@@ -11,6 +11,7 @@ Commands:
   python trader.py day              # day trading: checks every few minutes until near the close,
                                     #   then sells everything it bought today
   python trader.py day once         # a single day-trading check
+  python trader.py options          # calls and puts: Claude proposes buys (and sells of ones you own)
   python trader.py flatten          # sell everything day trading bought today, right now
   python trader.py history          # every plan, approval, skip, block and order
 
@@ -19,6 +20,7 @@ Safety by design:
   Paper keys (PK...) only ever go to the paper endpoint; live keys (AK...) only to the live one.
 - Claude never places orders. It returns proposals; this script checks them against hard limits
   (settings.json) and asks you before each order. Auto-approve exists for paper only.
+- Options: only buying calls/puts and selling ones you own, so a trade can't lose more than was paid.
 - Every day-trade entry carries a stop-loss and a take-profit with the broker, and day positions
   are closed before the market closes.
 - Claude only sees prices and your account numbers, never web pages or news, so nothing it
@@ -52,7 +54,6 @@ KEY_PREFIX = {"paper": "PK", "live": "AK"}
 DATA_URL = "https://data.alpaca.markets"
 ET = ZoneInfo("America/New_York")
 CLAUDE_MODEL = "claude-opus-5-5"
-PDT_EQUITY = 25_000  # US pattern-day-trader rule: below this, max 3 day trades per 5 business days
 
 DEFAULT_SETTINGS = {
     "mode": "paper",               # "paper" or "live"
@@ -79,6 +80,21 @@ DEFAULT_SETTINGS = {
         "no_new_entries_min_before_close": 30,
         "flatten_min_before_close": 10,  # sell all day positions this many minutes before the close
     },
+    "options": {
+        # Buying calls and puts only: the most any trade can lose is what was paid for it.
+        "watchlist": ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
+        "strategy": ("Occasional, small directional bets with calls (expecting a rise) or puts (expecting a "
+                     "fall) only when the price data shows a clear trend. Prefer 3-8 weeks to expiry and strikes "
+                     "near the current price. 'No trades' is a good answer most days."),
+        "max_premium_per_trade_usd": 200,   # most one options order can cost (= the most it can lose)
+        "max_total_options_pct": 10,        # all options held may cost at most this % of the account
+        "max_contracts_per_trade": 2,
+        "max_trades_per_day": 3,
+        "min_days_to_expiry": 7,            # options lose value fastest in their last week
+        "max_days_to_expiry": 60,
+        "close_days_before_expiry": 2,      # offer to sell options this close to expiry
+        "max_spread_pct": 15,               # skip contracts whose bid/ask gap is wider than this % of the price
+    },
 }
 
 
@@ -101,10 +117,11 @@ def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         saved = json.loads(SETTINGS_FILE.read_text())
-        day = saved.pop("day", {})
+        sections = {k: saved.pop(k, {}) for k in ("day", "options")}
         s.update(saved)
-        s["day"].update(day)
-    for section in (s, s["day"]):
+        for k, v in sections.items():
+            s[k].update(v)
+    for section in (s, s["day"], s["options"]):
         section["watchlist"] = [str(x).upper().strip() for x in section["watchlist"] if str(x).strip()]
     if s["mode"] not in ENDPOINTS:
         raise RuntimeError(f'"mode" in {SETTINGS_FILE} must be "paper" or "live".')
@@ -217,6 +234,12 @@ class Broker:
     def positions(self):
         return self._api("/v2/positions")
 
+    def stock_positions(self):
+        return [p for p in self.positions() if not is_option(p)]
+
+    def option_positions(self):
+        return [p for p in self.positions() if is_option(p)]
+
     def clock(self):
         return self._api("/v2/clock")
 
@@ -268,6 +291,34 @@ class Broker:
             "limit_price": f"{limit_price:.2f}", "time_in_force": "day", "order_class": "bracket",
             "take_profit": {"limit_price": f"{take_profit:.2f}"},
             "stop_loss": {"stop_price": f"{stop_price:.2f}"},
+            "client_order_id": client_order_id})
+
+    def option_snapshots(self, underlying, price, settings):
+        """Quotes and greeks for calls and puts within 10% of the price and the allowed expiry window."""
+        o = settings["options"]
+        today = dt.datetime.now(ET).date()
+        params = {"feed": "indicative", "limit": 1000,
+                  "expiration_date_gte": (today + dt.timedelta(days=o["min_days_to_expiry"])).isoformat(),
+                  "expiration_date_lte": (today + dt.timedelta(days=o["max_days_to_expiry"])).isoformat(),
+                  "strike_price_gte": f"{price * 0.9:.2f}", "strike_price_lte": f"{price * 1.1:.2f}"}
+        out = {}
+        while True:
+            res = self._req(DATA_URL, f"/v1beta1/options/snapshots/{underlying}", params)
+            out.update(res.get("snapshots") or {})
+            if not res.get("next_page_token") or len(out) >= 3000:
+                return out
+            params["page_token"] = res["next_page_token"]
+
+    def option_quotes(self, symbols):
+        res = self._req(DATA_URL, "/v1beta1/options/snapshots", {"symbols": ",".join(symbols), "feed": "indicative"})
+        return res.get("snapshots") or {}
+
+    def place_option_order(self, symbol, side, qty, limit_price, client_order_id):
+        """Only ever buy-to-open or sell-to-close: the broker itself rejects selling options not owned."""
+        return self._api("/v2/orders", method="POST", body={
+            "symbol": symbol, "side": side, "qty": str(qty), "type": "limit",
+            "limit_price": f"{limit_price:.2f}", "time_in_force": "day",
+            "position_intent": "buy_to_open" if side == "buy" else "sell_to_close",
             "client_order_id": client_order_id})
 
     def place_market_sell(self, symbol, qty, client_order_id):
@@ -322,12 +373,11 @@ def account_summary(acct):
     return {
         "equity": float(acct["equity"]), "cash": float(acct["cash"]),
         "equity_at_last_close": float(acct["last_equity"]),
-        "day_trades_last_5_days": int(acct.get("daytrade_count") or 0),
     }
 
 
 def snapshot(broker, settings):
-    acct, positions = broker.account(), broker.positions()
+    acct, positions = broker.account(), broker.stock_positions()
     held = {p["symbol"] for p in positions}
     symbols = sorted(set(settings["watchlist"]) | held)
     prices = broker.latest_prices(symbols)
@@ -356,7 +406,7 @@ def day_qty(positions, state):
 
 
 def day_snapshot(broker, settings, state, minutes_left):
-    acct, positions = broker.account(), broker.positions()
+    acct, positions = broker.account(), broker.stock_positions()
     dq = day_qty(positions, state)
     symbols = sorted(set(settings["day"]["watchlist"]) | set(dq))
     prices = broker.latest_prices(symbols)
@@ -644,9 +694,6 @@ def check_day_trade(trade, snap, settings):
         return False, f"daily limit of {d['max_entries_per_day']} day-trade entries reached", None
     if snap["minutes_until_close"] <= d["no_new_entries_min_before_close"]:
         return False, "too close to the market close for a new day trade", None
-    if acct["equity"] < PDT_EQUITY and acct["day_trades_last_5_days"] >= 3:
-        return False, ("you've made 3 day trades in the last 5 business days and the account is under "
-                       "$25,000 (pattern-day-trader rule)"), None
     stop, take = trade.get("stop_loss_pct", 0), trade.get("take_profit_pct", 0)
     if not 0.1 <= stop <= d["max_stop_loss_pct"]:
         return False, f"stop-loss must be between 0.1% and {d['max_stop_loss_pct']}% (got {stop:g}%)", None
@@ -691,7 +738,7 @@ def load_day_state(broker):
     path = day_state_file(broker.mode)
     if path.exists():
         return json.loads(path.read_text())
-    state = {"baseline": {p["symbol"]: float(p["qty"]) for p in broker.positions()}, "entries": [],
+    state = {"baseline": {p["symbol"]: float(p["qty"]) for p in broker.stock_positions()}, "entries": [],
              "flattened": False}
     save_day_state(broker.mode, state)
     return state
@@ -747,7 +794,7 @@ def flatten(broker, state):
     """Cancel day-trade orders and sell every share bought by day trading today."""
     cancel_and_wait(broker, entry_order_ids(state))
     sold = {}
-    for sym, qty in day_qty(broker.positions(), state).items():
+    for sym, qty in day_qty(broker.stock_positions(), state).items():
         try:
             broker.place_market_sell(sym, qty, f"amhx-{dt.datetime.now():%Y%m%d%H%M%S}-{sym}")
             sold[sym] = qty
@@ -761,6 +808,210 @@ def flatten(broker, state):
     if not sold:
         print("  No day positions to close.")
     return sold
+
+
+# ---------- options (buying calls and puts only) ----------
+
+def is_option(p):
+    return p.get("asset_class") == "us_option"
+
+
+def parse_occ(symbol):
+    """Option symbols look like AAPL261218C00200000: AAPL, 2026-12-18, Call, strike $200.000."""
+    core = symbol[-15:]
+    if len(symbol) < 16 or core[6] not in "CP" or not (core[:6] + core[7:]).isdigit():
+        raise ValueError(f"not an option symbol: {symbol}")
+    return {"underlying": symbol[:-15], "expiration": f"20{core[:2]}-{core[2:4]}-{core[4:6]}",
+            "type": "call" if core[6] == "C" else "put", "strike": int(core[7:]) / 1000}
+
+
+def describe_option(symbol):
+    try:
+        o = parse_occ(symbol)
+    except ValueError:
+        return symbol
+    return f"{o['underlying']} ${o['strike']:g} {o['type'].upper()} expiring {o['expiration']}"
+
+
+def days_to_expiry(expiration, today=None):
+    today = today or dt.datetime.now(ET).date()
+    return (dt.date.fromisoformat(expiration) - today).days
+
+
+def round_to_tick(price, up):
+    """Options trade in $0.01 steps under $3 and $0.05 steps from $3 (for the popular, 'penny' symbols)."""
+    tick = 0.05 if price >= 3 else 0.01
+    steps = price / tick
+    steps = math.ceil(steps - 1e-9) if up else math.floor(steps + 1e-9)
+    return round(steps * tick, 2)
+
+
+def buy_limit(bid, ask):
+    """Offer a bit above the middle of bid/ask (more likely to fill), never above the ask."""
+    return min(round_to_tick(bid + (ask - bid) * 0.75, up=True), ask)
+
+
+def sell_limit(bid, ask):
+    return max(round_to_tick(bid + (ask - bid) * 0.25, up=False), bid)
+
+
+def option_candidates(snapshots, price, settings, today=None):
+    """Turn Alpaca's option chain into a short list of liquid, affordable contracts near the current price."""
+    o = settings["options"]
+    rows = []
+    for sym, snap in snapshots.items():
+        q = snap.get("latestQuote") or {}
+        bid, ask = float(q.get("bp") or 0), float(q.get("ap") or 0)
+        if bid <= 0 or ask < bid:
+            continue
+        mid = (bid + ask) / 2
+        if (ask - bid) / mid * 100 > o["max_spread_pct"]:
+            continue  # hard to trade fairly
+        try:
+            c = parse_occ(sym)
+        except ValueError:
+            continue
+        dte = days_to_expiry(c["expiration"], today)
+        if not o["min_days_to_expiry"] <= dte <= o["max_days_to_expiry"]:
+            continue
+        cost = buy_limit(bid, ask) * 100
+        if cost > o["max_premium_per_trade_usd"]:
+            continue
+        greeks = snap.get("greeks") or {}
+        rows.append({"contract": sym, "type": c["type"], "strike": c["strike"], "expiration": c["expiration"],
+                     "days_to_expiry": dte, "bid": bid, "ask": ask, "cost_per_contract": round(cost, 2),
+                     "delta": round(greeks["delta"], 2) if greeks.get("delta") is not None else None,
+                     "implied_volatility": round(snap["impliedVolatility"], 3) if snap.get("impliedVolatility") else None})
+    rows.sort(key=lambda r: abs(r["strike"] - price))
+    keep, count = [], {}
+    for r in rows:  # the 3 strikes nearest the price, per expiration and type
+        k = (r["expiration"], r["type"])
+        if count.get(k, 0) < 3:
+            keep.append(r)
+            count[k] = count.get(k, 0) + 1
+    expirations = sorted({r["expiration"] for r in keep})
+    picked = set(expirations[::max(1, len(expirations) // 3)][:3])  # up to 3 spread-out expiration dates
+    return sorted((r for r in keep if r["expiration"] in picked),
+                  key=lambda r: (r["expiration"], r["type"], r["strike"]))
+
+
+def held_option_summary(p, quote, today=None):
+    c = parse_occ(p["symbol"])
+    q = (quote or {}).get("latestQuote") or {}
+    return {"contract": p["symbol"], "type": c["type"], "strike": c["strike"], "expiration": c["expiration"],
+            "days_to_expiry": days_to_expiry(c["expiration"], today), "qty": int(float(p["qty"])),
+            "side": p.get("side", "long"), "paid_total": float(p["cost_basis"]),
+            "market_value": float(p["market_value"]),
+            "unrealized_pl_pct": round(float(p["unrealized_plpc"]) * 100, 1),
+            "bid": float(q.get("bp") or 0), "ask": float(q.get("ap") or 0)}
+
+
+def options_snapshot(broker, settings):
+    acct = broker.account()
+    held = broker.option_positions()
+    underlyings = settings["options"]["watchlist"]
+    prices = broker.latest_prices(underlyings)
+    daily = broker.daily_bars(underlyings)
+    quotes = broker.option_quotes([p["symbol"] for p in held]) if held else {}
+    chains = {u: option_candidates(broker.option_snapshots(u, prices[u], settings), prices[u], settings)
+              for u in underlyings if prices.get(u)}
+    held_rows = [held_option_summary(p, quotes.get(p["symbol"])) for p in held]
+    return {
+        "as_of": dt.datetime.now(ET).isoformat(timespec="minutes"),
+        "account": {**account_summary(acct),
+                    "options_buying_power": float(acct.get("options_buying_power") or acct["cash"])},
+        "options_held": held_rows,
+        "options_paid_total": sum(h["paid_total"] for h in held_rows),
+        "underlyings": {u: {"latest_price": prices.get(u), **(summarize_bars(daily.get(u, [])) or {})}
+                        for u in underlyings},
+        "contracts_you_can_buy": chains,
+    }
+
+
+OPTIONS_SYSTEM = """You are the options planner for a personal brokerage account whose owner is a beginner.
+The account ONLY buys calls and puts and later sells those same contracts. It never sells options it
+doesn't own, so the most any trade can lose is what was paid for it.
+
+You receive the account, options already held, price statistics for a few stocks/ETFs, a short list
+of contracts that may be bought, and the user's strategy and limits. Propose at most 3 actions, or none:
+- side "buy": buy a call (profits if the stock rises enough before expiry) or a put (profits if it falls).
+  symbol must be a "contract" from contracts_you_can_buy, exactly as written.
+- side "sell": sell a contract that is held (from options_held), to take a profit, cut a loss, or avoid
+  holding into the final days before expiry.
+Rules:
+- Only act on a clear reason in the data. Don't invent news, earnings dates, or facts not in the data.
+- Respect the limits; orders that break them will be rejected. Whole contracts; 1 contract = 100 shares.
+- reason: 1-2 plain sentences a beginner can follow, e.g. "This call gains if AAPL is above $X by DATE."
+- risk: the main way this loses money. For buys, say the whole amount paid can be lost.
+- outlook: 1-2 sentences on the account and the market data, honest about uncertainty."""
+
+
+def build_options_prompt(snap, settings):
+    o = settings["options"]
+    limits = {k: o[k] for k in ("max_premium_per_trade_usd", "max_total_options_pct", "max_contracts_per_trade",
+                                "max_trades_per_day", "min_days_to_expiry", "close_days_before_expiry")}
+    return (f"<strategy>\n{o['strategy']}\n</strategy>\n\n"
+            f"<limits>\n{json.dumps(limits)}\n</limits>\n\n"
+            f"<snapshot>\n{json.dumps(snap, indent=1)}\n</snapshot>\n\n"
+            "Propose options actions for today (or none).")
+
+
+def check_option_trade(trade, snap, settings, buys_today, market_open):
+    """Return (ok, reason, order). Buying to open listed contracts and selling held ones are the only actions."""
+    o = settings["options"]
+    sym, side, qty = trade["symbol"], trade["side"], trade["qty"]
+    acct = snap["account"]
+
+    if not market_open:
+        return False, "the market is closed", None
+    if side not in ("buy", "sell"):
+        return False, f"unknown side '{side}'", None
+    if qty <= 0:
+        return False, "quantity must be at least 1 contract", None
+
+    if side == "sell":
+        held = next((h for h in snap["options_held"] if h["contract"] == sym and h["side"] == "long"), None)
+        if not held:
+            return False, "you don't own this contract (selling options you don't own is never allowed)", None
+        if qty > held["qty"]:
+            return False, f"you own only {held['qty']} of this contract", None
+        if held["bid"] <= 0:
+            return False, "nobody is bidding for this contract right now; try again later", None
+        return True, "", {"qty": qty, "limit_price": sell_limit(held["bid"], max(held["ask"], held["bid"]))}
+
+    cand = next((c for chain in snap["contracts_you_can_buy"].values() for c in chain if c["contract"] == sym), None)
+    if not cand:
+        return False, "that contract isn't on the list of allowed calls/puts (within your expiry and price limits)", None
+    if buys_today >= o["max_trades_per_day"]:
+        return False, f"daily limit of {o['max_trades_per_day']} options buys reached", None
+    if qty > o["max_contracts_per_trade"]:
+        return False, f"{qty} contracts is over your limit of {o['max_contracts_per_trade']} per trade", None
+    if cand["days_to_expiry"] < o["min_days_to_expiry"]:
+        return False, f"expires in {cand['days_to_expiry']} days (minimum {o['min_days_to_expiry']})", None
+    limit_price = buy_limit(cand["bid"], cand["ask"])
+    cost = limit_price * 100 * qty
+    if cost > o["max_premium_per_trade_usd"]:
+        return False, f"costs up to {money(cost)}, over your {money(o['max_premium_per_trade_usd'])} per-trade limit", None
+    if cost > acct["options_buying_power"]:
+        return False, f"costs up to {money(cost)} but only {money(acct['options_buying_power'])} is available", None
+    cap = acct["equity"] * o["max_total_options_pct"] / 100
+    if snap["options_paid_total"] + cost > cap:
+        return False, (f"all your options together would cost {money(snap['options_paid_total'] + cost)}, over "
+                       f"{o['max_total_options_pct']}% of the account ({money(cap)})"), None
+    day_change = acct["equity"] / acct["equity_at_last_close"] - 1 if acct["equity_at_last_close"] else 0
+    if day_change <= -settings["daily_loss_stop_pct"] / 100:
+        return False, f"account is down {day_change * -100:.1f}% today; new buys are paused", None
+    return True, "", {"qty": qty, "limit_price": limit_price, "cost": cost}
+
+
+def expiring_sells(snap, settings):
+    """Held options close to expiry: always offered for sale, so nothing is left to be exercised."""
+    days = settings["options"]["close_days_before_expiry"]
+    return [{"symbol": h["contract"], "side": "sell", "qty": h["qty"],
+             "reason": f"Expires in {h['days_to_expiry']} day(s). Selling now keeps whatever value is left and "
+                       "avoids it being exercised into 100 shares per contract.",
+             "risk": "If the stock moves your way in the last days, you miss that gain."}
+            for h in snap["options_held"] if h["side"] == "long" and h["days_to_expiry"] <= days]
 
 
 # ---------- commands ----------
@@ -799,12 +1050,16 @@ def status():
     print(f"{label} - market {'open' if clock['is_open'] else 'closed'}")
     print(f"  Value  {money(equity)}   today {money(equity - last)} ({(equity / last - 1) * 100 if last else 0:+.2f}%)")
     print(f"  Cash   {money(acct['cash'])}")
-    pdt = " (account under $25,000: the limit is 3)" if equity < PDT_EQUITY else ""
-    print(f"  Day trades in the last 5 business days: {int(acct.get('daytrade_count') or 0)}{pdt}")
     if not positions:
         print("  No positions yet.")
     for p in positions:
-        print(f"  {p['symbol']:<6} {float(p['qty']):>8g} sh  {money(p['market_value']):>12}  "
+        if is_option(p):
+            o = parse_occ(p["symbol"])
+            name = f"{o['underlying']} {o['strike']:g} {o['type'].upper()} {o['expiration']}"
+            unit = "ct"
+        else:
+            name, unit = p["symbol"], "sh"
+        print(f"  {name:<24} {float(p['qty']):>6g} {unit}  {money(p['market_value']):>12}  "
               f"P/L {money(p['unrealized_pl'])} ({float(p['unrealized_plpc']) * 100:+.1f}%)")
 
 
@@ -950,6 +1205,75 @@ def day(once=False):
               "to resume (it closes them before the bell).")
 
 
+def options_cmd():
+    settings = load_settings()
+    confirm_mode(settings)
+    b = Broker(settings["mode"])
+    acct = b.account()
+    level = acct.get("options_trading_level", acct.get("options_approved_level"))
+    if level is not None and int(level) < 2:
+        print("This account isn't approved to buy calls and puts yet (options level 2).\n"
+              "In the Alpaca dashboard, open your account settings and apply for options trading.")
+        return
+    market_open = bool(b.clock()["is_open"])
+    print("Getting stock prices and option quotes...")
+    snap = options_snapshot(b, settings)
+    if not any(snap["contracts_you_can_buy"].values()) and not snap["options_held"]:
+        print("No contracts fit your limits right now (price, expiry, bid/ask gap). Nothing to do.")
+        return
+    buys_today = sum(1 for o in b.orders_today()
+                     if o.get("client_order_id", "").startswith("amho-") and o.get("side") == "buy")
+    forced = expiring_sells(snap, settings)
+    print("Asking Claude for an options plan (this can take a minute)...\n")
+    plan = ask_claude(build_options_prompt(snap, settings), OPTIONS_SYSTEM, PLAN_SCHEMA)
+    journal("options_plan", mode=b.mode, outlook=plan["outlook"], trades=plan["trades"])
+    print(f"Claude's view: {plan['outlook']}\n")
+    forced_syms = {t["symbol"] for t in forced}
+    trades = forced + [t for t in plan["trades"] if not (t["side"] == "sell" and t["symbol"] in forced_syms)]
+    if not trades:
+        print("No options trades proposed today.")
+        return
+    if not market_open:
+        print("The market is closed, so these are shown for reference only. Run again during market hours "
+              "(9:30am-4pm ET, weekdays) to place orders.\n")
+
+    for i, t in enumerate(trades, 1):
+        verb = "BUY" if t["side"] == "buy" else "SELL"
+        print(f"{i}. {verb} {t['qty']} x {describe_option(t['symbol'])}")
+        print(f"   Why:  {t['reason']}")
+        print(f"   Risk: {t['risk']}")
+        ok, why, o = check_option_trade(t, snap, settings, buys_today, market_open)
+        if not ok:
+            print(f"   Blocked: {why}.\n")
+            journal("blocked", mode=b.mode, trade=t, reason=why)
+            continue
+        if t["side"] == "buy":
+            q = (f"Pay up to {money(o['limit_price'])} per share = {money(o['cost'])} in total "
+                 f"(the most you can lose)?")
+        else:
+            q = f"Sell for at least {money(o['limit_price'])} per share ({money(o['limit_price'] * 100 * o['qty'])} total)?"
+        if not approve(settings, q):
+            print("   Skipped.\n")
+            journal("skipped", mode=b.mode, trade=t)
+            continue
+        try:
+            order = b.place_option_order(t["symbol"], t["side"], o["qty"], o["limit_price"],
+                                         f"amho-{dt.datetime.now():%Y%m%d%H%M%S}-{i}")
+        except RuntimeError as e:
+            print(f"   Order failed: {e}\n")
+            journal("order_failed", mode=b.mode, trade=t, error=str(e))
+            continue
+        if t["side"] == "buy":
+            buys_today += 1
+            snap["options_paid_total"] += o["cost"]
+            snap["account"]["options_buying_power"] -= o["cost"]
+        else:
+            held = next(h for h in snap["options_held"] if h["contract"] == t["symbol"])
+            held["qty"] -= o["qty"]
+        print(f"   Order sent ({order.get('status', 'submitted')}).\n")
+        journal("ordered", mode=b.mode, trade=t, limit_price=o["limit_price"], order_id=order.get("id"))
+
+
 def flatten_cmd():
     settings = load_settings()
     confirm_mode(settings)
@@ -972,8 +1296,8 @@ def history():
         t = e.get("trade") or {}
         label = f"{t.get('side', '').upper()} {t.get('qty', '')} {t.get('symbol', '')}".strip()
         ev = e["event"]
-        if ev in ("plan", "day_plan"):
-            kind = "day check" if ev == "day_plan" else "plan"
+        if ev in ("plan", "day_plan", "options_plan"):
+            kind = {"plan": "plan", "day_plan": "day check", "options_plan": "options plan"}[ev]
             print(f"{when}  {tag}{kind}: {len(e['trades'])} trade(s). {e['outlook']}")
         elif ev == "ordered":
             price = e.get("limit_price") or (e.get("order") or {}).get("limit_price")
@@ -992,7 +1316,7 @@ def main():
     cmd = args[0] if args else "help"
     actions = {
         "setup": lambda: setup(args[1] if len(args) > 1 else "paper"),
-        "status": status, "run": run, "history": history, "flatten": flatten_cmd,
+        "status": status, "run": run, "history": history, "flatten": flatten_cmd, "options": options_cmd,
         "day": lambda: day(once=len(args) > 1 and args[1] == "once"),
     }
     if cmd not in actions:

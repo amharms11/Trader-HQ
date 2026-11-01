@@ -18,16 +18,16 @@ SETTINGS["day"]["watchlist"] = ["SPY", "AAPL"]
 
 def settings(**overrides):
     s = copy.deepcopy(SETTINGS)
-    day = overrides.pop("day", {})
+    sections = {k: overrides.pop(k, {}) for k in ("day", "options")}
     s.update(overrides)
-    s["day"].update(day)
+    for k, v in sections.items():
+        s[k].update(v)
     return s
 
 
 def snap(cash=10_000.0, equity=10_000.0, last_equity=10_000.0, positions=None):
     return {
-        "account": {"equity": equity, "cash": cash, "equity_at_last_close": last_equity,
-                    "day_trades_last_5_days": 0},
+        "account": {"equity": equity, "cash": cash, "equity_at_last_close": last_equity},
         "positions": positions or [],
         "market": {"SPY": {"latest_price": 100.0}, "AAPL": {"latest_price": 200.0},
                    "TSLA": {"latest_price": 300.0}},
@@ -150,15 +150,6 @@ class CheckDayTradeTests(unittest.TestCase):
     def test_entry_count(self):
         self.assertFalse(self.check(day_trade(), day_snap(entries=6))[0])
 
-    def test_pattern_day_trader_rule(self):
-        s = day_snap()
-        s["account"]["day_trades_last_5_days"] = 3
-        ok, why, _ = self.check(day_trade(), s)
-        self.assertFalse(ok)
-        self.assertIn("pattern-day-trader", why)
-        s["account"]["equity"] = s["account"]["equity_at_last_close"] = 30_000
-        self.assertTrue(self.check(day_trade(qty=4), s)[0])
-
     def test_day_watchlist(self):
         self.assertFalse(self.check(day_trade("TSLA"))[0])
 
@@ -223,6 +214,9 @@ class FakeBroker:
 
     def positions(self):
         return self._positions
+
+    def stock_positions(self):
+        return [p for p in self._positions if not pt.is_option(p)]
 
     def place_limit_order(self, symbol, side, qty, limit_price, client_order_id):
         self.orders.append((symbol, side, qty, limit_price))
@@ -435,3 +429,171 @@ class SummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------- options ----------
+
+TODAY = pt.dt.date(2026, 11, 2)
+CALL = "AAPL261218C00200000"   # AAPL $200 call, 2026-12-18 (46 days out)
+PUT = "AAPL261218P00195000"
+NEAR = "AAPL261106C00200000"   # 4 days out: too close to expiry to buy
+
+
+def chain_snap(sym, bid, ask, delta=0.5):
+    return {sym: {"latestQuote": {"bp": bid, "ap": ask}, "greeks": {"delta": delta}, "impliedVolatility": 0.3}}
+
+
+def opt_snap(held=None, paid=0.0, equity=10_000.0, bp=5_000.0, candidates=None):
+    return {
+        "account": {"equity": equity, "cash": bp, "equity_at_last_close": equity, "options_buying_power": bp},
+        "options_held": held or [],
+        "options_paid_total": paid,
+        "underlyings": {"AAPL": {"latest_price": 200.0}},
+        "contracts_you_can_buy": {"AAPL": candidates if candidates is not None else [
+            {"contract": CALL, "type": "call", "strike": 200.0, "expiration": "2026-12-18",
+             "days_to_expiry": 46, "bid": 0.90, "ask": 1.00, "cost_per_contract": 98.0},
+        ]},
+    }
+
+
+def held(contract=CALL, qty=1, dte=46, bid=1.2, ask=1.3, side="long"):
+    return {"contract": contract, "qty": qty, "side": side, "days_to_expiry": dte, "bid": bid, "ask": ask,
+            "paid_total": 100.0}
+
+
+class OptionHelperTests(unittest.TestCase):
+    def test_parse_occ(self):
+        self.assertEqual(pt.parse_occ(CALL), {"underlying": "AAPL", "expiration": "2026-12-18",
+                                              "type": "call", "strike": 200.0})
+        self.assertEqual(pt.parse_occ("SPY261218P00512500")["strike"], 512.5)
+        with self.assertRaises(ValueError):
+            pt.parse_occ("AAPL")
+        self.assertEqual(pt.describe_option(PUT), "AAPL $195 PUT expiring 2026-12-18")
+
+    def test_limit_prices_stay_inside_bid_ask_on_valid_ticks(self):
+        self.assertEqual(pt.buy_limit(0.90, 1.00), 0.98)
+        self.assertEqual(pt.sell_limit(0.90, 1.00), 0.92)
+        self.assertEqual(pt.buy_limit(4.00, 4.40), 4.30)   # $0.05 steps from $3
+        self.assertEqual(pt.sell_limit(4.00, 4.40), 4.10)
+        self.assertEqual(pt.buy_limit(1.00, 1.01), 1.01)   # never above the ask
+
+    def test_candidates_filter_and_trim(self):
+        s = settings()
+        snaps = {}
+        snaps.update(chain_snap(CALL, 0.90, 1.00))
+        snaps.update(chain_snap(PUT, 0.50, 0.90))                     # spread too wide
+        snaps.update(chain_snap(NEAR, 0.30, 0.32))                     # expires too soon
+        snaps.update(chain_snap("AAPL261218C00205000", 2.50, 2.60))    # $255+ per contract: over $200
+        snaps.update(chain_snap("AAPL261218C00210000", 0.00, 0.05))    # no bid
+        rows = pt.option_candidates(snaps, 200.0, s, today=TODAY)
+        self.assertEqual([r["contract"] for r in rows], [CALL])
+        self.assertEqual(rows[0]["cost_per_contract"], 98.0)
+        self.assertEqual(rows[0]["days_to_expiry"], 46)
+
+    def test_candidates_keep_nearest_strikes(self):
+        snaps = {}
+        for strike in range(190, 211):
+            snaps.update(chain_snap(f"AAPL261218C00{strike}000", 0.90, 1.00))
+        rows = pt.option_candidates(snaps, 200.0, settings(), today=TODAY)
+        self.assertEqual(sorted(r["strike"] for r in rows), [199.0, 200.0, 201.0])
+
+    def test_stock_positions_exclude_options(self):
+        b = FakeBroker(positions=[{"symbol": "SPY", "qty": "2", "asset_class": "us_equity"},
+                                  {"symbol": CALL, "qty": "1", "asset_class": "us_option"}])
+        self.assertEqual([p["symbol"] for p in b.stock_positions()], ["SPY"])
+
+
+class CheckOptionTradeTests(unittest.TestCase):
+    def check(self, t, s=None, buys=0, market_open=True, **overrides):
+        return pt.check_option_trade(t, s or opt_snap(), settings(**overrides), buys, market_open)
+
+    def test_ok_buy(self):
+        ok, why, o = self.check(trade(CALL, qty=2))
+        self.assertTrue(ok, why)
+        self.assertEqual(o, {"qty": 2, "limit_price": 0.98, "cost": 196.0})
+
+    def test_only_listed_contracts(self):
+        ok, why, _ = self.check(trade(PUT))
+        self.assertFalse(ok)
+        self.assertIn("allowed", why)
+
+    def test_never_sell_what_you_dont_own(self):
+        ok, why, _ = self.check(trade(CALL, side="sell"))
+        self.assertFalse(ok)
+        self.assertIn("never", why)
+        ok, _, _ = self.check(trade(CALL, side="sell"), opt_snap(held=[held(side="short")]))
+        self.assertFalse(ok)
+        self.assertFalse(self.check(trade(CALL, side="sell", qty=2), opt_snap(held=[held(qty=1)]))[0])
+
+    def test_sell_held(self):
+        ok, why, o = self.check(trade(CALL, side="sell"), opt_snap(held=[held()]))
+        self.assertTrue(ok, why)
+        self.assertEqual(o["limit_price"], 1.22)
+        self.assertFalse(self.check(trade(CALL, side="sell"), opt_snap(held=[held(bid=0)]))[0])
+
+    def test_premium_limit(self):
+        ok, why, _ = self.check(trade(CALL, qty=2), options={"max_premium_per_trade_usd": 150})
+        self.assertFalse(ok)
+        self.assertIn("per-trade", why)
+
+    def test_total_options_cap(self):
+        ok, why, _ = self.check(trade(CALL), opt_snap(paid=950))  # 950 + 98 > 10% of $10k
+        self.assertFalse(ok)
+        self.assertIn("10%", why)
+
+    def test_buying_power(self):
+        self.assertFalse(self.check(trade(CALL), opt_snap(bp=50))[0])
+
+    def test_contract_and_daily_limits(self):
+        self.assertFalse(self.check(trade(CALL, qty=3))[0])
+        self.assertFalse(self.check(trade(CALL), buys=3)[0])
+
+    def test_market_closed(self):
+        self.assertFalse(self.check(trade(CALL), market_open=False)[0])
+
+    def test_expiring_sells(self):
+        snap = opt_snap(held=[held(dte=1), held(PUT, dte=30), held(NEAR, dte=2, side="short")])
+        self.assertEqual([t["symbol"] for t in pt.expiring_sells(snap, settings())], [CALL])
+
+
+class OptionsCommandTests(TempData):
+    def run_options(self, broker, snap, plan, answers, s=None):
+        with mock.patch.object(pt, "Broker", return_value=broker), \
+             mock.patch.object(pt, "load_settings", return_value=s or settings()), \
+             mock.patch.object(pt, "options_snapshot", return_value=copy.deepcopy(snap)), \
+             mock.patch.object(pt, "ask_claude", return_value=plan), \
+             mock.patch.object(builtins, "input", side_effect=answers), redirect_stdout(io.StringIO()) as out:
+            pt.options_cmd()
+        return out.getvalue()
+
+    def broker(self, level=3, **kw):
+        b = FakeBroker(**kw)
+        b.account = lambda: {"options_trading_level": level}
+        b.option_orders = []
+        b.place_option_order = lambda *a: b.option_orders.append(a[:4]) or {"id": "x", "status": "accepted"}
+        return b
+
+    def test_approved_buy_only(self):
+        b = self.broker()
+        plan = {"outlook": "o", "trades": [trade(CALL), trade(PUT), trade(CALL, qty=1)]}
+        out = self.run_options(b, opt_snap(), plan, ["y", "n"])
+        self.assertEqual(b.option_orders, [(CALL, "buy", 1, 0.98)])
+        self.assertIn("AAPL $200 CALL", out)
+
+    def test_expiring_contract_offered_for_sale_first(self):
+        b = self.broker()
+        snap = opt_snap(held=[held(dte=1)])
+        plan = {"outlook": "o", "trades": [trade(CALL, side="sell")]}  # duplicate of the forced sell
+        self.run_options(b, snap, plan, ["y"])
+        self.assertEqual(b.option_orders, [(CALL, "sell", 1, 1.22)])
+
+    def test_unapproved_live_account_stops(self):
+        b = self.broker(level=1, mode="live")
+        out = self.run_options(b, opt_snap(), {"outlook": "", "trades": []}, ["LIVE"], settings(mode="live"))
+        self.assertIn("isn't approved", out)
+        self.assertEqual(b.option_orders, [])
+
+    def test_market_closed_places_nothing(self):
+        b = self.broker(is_open=False)
+        self.run_options(b, opt_snap(), {"outlook": "", "trades": [trade(CALL)]}, [])
+        self.assertEqual(b.option_orders, [])
