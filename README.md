@@ -149,6 +149,21 @@ The Live tab shows each bot's profit or loss today and why it's waiting, if it i
 
 Run hours, longer intervals and daily goals all reduce searches. Watching open trades never uses Claude.
 
+## Phone access (iPhone)
+Use Trader HQ from your phone anywhere: start and stop bots, approve trades, and watch Live. Your Mac still does all the work, so it has to be on with Trader HQ open.
+
+1. Install the free **Tailscale** app on the Mac and on the iPhone. Sign in to both with the same account. This makes a private network that only your own devices can see. Nothing is opened to the public internet.
+2. On the Mac, open **Settings → Phone access** and choose a phone passcode.
+3. Tick **Allow my phone to open Trader HQ**. Leave **Keep this Mac awake** on and keep the Mac plugged in. Closing the lid still puts most Macs to sleep.
+4. Point the iPhone camera at the QR code, open the link and enter your passcode. Then, in Safari, tap **Share → Add to Home Screen** to get a Trader HQ app icon.
+
+Safety on the phone:
+- After 5 wrong passcodes, sign-in locks for 15 minutes.
+- Changing the passcode signs out every phone, and you can sign out a single phone from the Mac.
+- From the phone you can't see or change keys, change phone settings, switch between paper and live, or quit the app. Those only work on the Mac.
+
+**Notifications (optional):** install the free **ntfy** app on the iPhone. In Settings → Phone access, tap to set up notifications, then subscribe to the topic it shows. You choose which alerts you get: trades waiting for your approval, trades placed or closed, goals and price alerts, the daily summary, and problems. Keep the topic name to yourself. Notifications never include keys.
+
 ## Calendar
 The **Calendar** tab shows every day's profit or loss on a monthly calendar:
 - ▲ green days and ▼ red days, with the dollar and % change; the color is deeper for bigger moves
@@ -270,7 +285,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py
+python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py
 ```
 No network or keys needed.
 

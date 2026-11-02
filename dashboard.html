@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Trader HQ">
+<meta name="theme-color" content="#1d55b4">
+<link rel="apple-touch-icon" href="/assets/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Trader HQ</title>
 <link rel="icon" href="/assets/favicon.png">
 <style>
@@ -224,6 +229,15 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .bot-cfg details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
 .bot-cfg-form { display: grid; gap: 8px; margin-top: 8px; }
 .bot-cfg-form .form-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.phone-steps { display: grid; gap: 14px; }
+.phone-step { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); }
+.phone-step h3 { margin: 0; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+.phone-step .num { width: 22px; height: 22px; border-radius: 50%; background: var(--grid); display: inline-grid; place-items: center; font-size: 12px; flex: none; }
+.phone-step.done .num { background: var(--paper); color: #fff; }
+.phone-link { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.phone-link .qr { background: #fff; padding: 6px; border-radius: 8px; line-height: 0; }
+.phone-link code, .topic code { font-size: 14px; background: var(--grid); padding: 4px 8px; border-radius: 6px; user-select: all; word-break: break-all; }
+@media (max-width: 700px) { header .search { order: 9; flex: 1; } header .search input { width: 100%; } body { padding-bottom: env(safe-area-inset-bottom); } }
 .live-bots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
 .live-bot { display: flex; flex-direction: column; align-items: stretch; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--raised); }
 .live-bot .bot-cfg { order: 9; border-top: 1px solid var(--border); padding-top: 8px; }
@@ -390,6 +404,7 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
 <dialog id="settingsDlg">
   <div class="dlg-head"><h2>Settings</h2><button class="btn small" type="button" id="closeSettings">Close</button></div>
   <div class="dlg-body">
+    <div id="phoneSettings"></div>
     <form id="settingsForm" class="form"></form>
     <fieldset>
       <legend>Alpaca keys</legend>
@@ -463,6 +478,7 @@ async function api(path, body) {
   const r = await fetch(path, opts);
   let data = {};
   try { data = await r.json(); } catch (_) {}
+  if (r.status === 401 && data.login) { location.replace("/?signin=1"); throw new Error("Please sign in again."); }
   if (!r.ok) { const e = new Error(data.error || ("Error " + r.status)); e.needLive = data.need_live; throw e; }
   return data;
 }
@@ -496,6 +512,7 @@ function renderOffline(msg) {
 }
 function render() {
   const live = S.mode === "live";
+  $("quitBtn").hidden = !!S.remote;  // quitting from the phone would leave you with no way back in
   const mp = $("modePill"); mp.className = "pill " + (live ? "live" : "paper");
   mp.lastChild.textContent = live ? "LIVE · real money" : "PAPER · practice money";
   const banners = [];
@@ -781,6 +798,11 @@ async function openSettings() {
   form.dataset.defaults = JSON.stringify(defaults);
   $("claudeStatus").textContent = S && S.claude ? "Claude is connected." : "Claude isn't connected yet.";
   $("updateStatus").textContent = updateText(S && S.update);
+  if (S && S.remote) {  // on the phone: keys, phone settings and paper/live stay on the Mac
+    for (const id of ["keysForm", "claudeForm", "githubForm", "finnhubForm"]) { const f = $(id); if (f) f.closest("fieldset").hidden = true; }
+    const mode = form.querySelector("select[name=mode]"); if (mode) { mode.disabled = true; mode.title = "Switch paper/live on the Mac."; }
+  }
+  if (window.FX && window.FX.phoneSettings) window.FX.phoneSettings();
   $("settingsDlg").showModal();
 }
 function readSettings() {
@@ -881,6 +903,7 @@ setInterval(loadChart, 120000);
 </script>
 <script src="/vendor/lightweight-charts.js"></script>
 <script src="/market.js"></script>
+<script src="/vendor/qrcode.js"></script>
 <script src="/features.js"></script>
 </body>
 </html>

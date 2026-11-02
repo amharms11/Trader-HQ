@@ -745,4 +745,93 @@ function botConfig(key, b) {
     el("details", {open: open}, el("summary", {}, "Goals & hours"), form));
 }
 
+
+// ---------- Settings > Phone access (shown on the Mac only) ----------
+const PUSH_KINDS = [["push_approvals", "A trade needs my approval"], ["push_trades", "Trades placed or closed"],
+  ["push_goals_alerts", "Goals reached and price alerts"], ["push_summary", "Daily summary"], ["push_errors", "Problems (e.g. an order failed)"]];
+FX.phoneSettings = async function (refresh) {
+  const box = document.getElementById("phoneSettings"); if (!box) return;
+  if (ST() && S.remote) {
+    box.replaceChildren(el("fieldset", {}, el("legend", {}, "This phone"),
+      el("p", {class: "hint", style: "margin-top:0"}, "You're using Trader HQ from your phone. Keys, phone settings and switching paper/live can only be changed on the Mac."),
+      el("button", {class: "btn small", type: "button", onclick: async () => { try { await api("/api/phone/logout", {}); } catch (_) {} location.replace("/?signed-out=1"); }}, "Sign out this phone")));
+    return;
+  }
+  let st;
+  try { st = await api("/api/phone" + (refresh ? "?refresh=1" : "")); } catch (e) { box.replaceChildren(el("fieldset", {}, el("legend", {}, "Phone access"), el("p", {class: "msg err"}, e.message))); return; }
+  const ts = st.tailscale || {}, ph = st.settings;
+  const again = () => FX.phoneSettings(true);
+  const saveSettings = async (patch, msg) => {
+    try { await api("/api/settings", {settings: {phone: patch}}); if (msg) toast(msg); } catch (e) { toast(e.message, 7000); }
+    setTimeout(again, 300);
+  };
+  const step = (n, done, title, ...body) => el("div", {class: "phone-step" + (done ? " done" : "")}, el("h3", {}, el("span", {class: "num"}, done ? "✓" : String(n)), title), ...body);
+  const copy = (text) => el("button", {class: "btn small", type: "button", onclick: () => { navigator.clipboard && navigator.clipboard.writeText(text); toast("Copied."); }}, "Copy");
+
+  const s1 = step(1, !!ts.ip, "Connect this Mac and your iPhone with Tailscale (free)",
+    ts.ip ? el("p", {class: "hint", style: "margin:0"}, `This Mac is on your private Tailscale network as ${ts.dns || ts.ip}.`)
+      : el("div", {class: "hint", style: "margin:0"},
+        el("p", {style: "margin:0 0 6px"}, ts.installed ? "Tailscale is installed but not connected. Open Tailscale on this Mac and sign in." : "Tailscale makes a private, encrypted link between your own devices. Nothing is opened to the internet."),
+        el("ol", {style: "margin:0;padding-left:18px"},
+          el("li", {}, "On this Mac: install Tailscale from the Mac App Store (or tailscale.com/download), open it and sign in."),
+          el("li", {}, "On your iPhone: install Tailscale from the App Store and sign in with the same account."),
+          el("li", {}, "Turn Tailscale on (connected) on both."))),
+    el("div", {}, el("button", {class: "btn small", type: "button", onclick: again}, "Check again")));
+
+  const pass = el("input", {type: "password", autocomplete: "new-password", minlength: 6, placeholder: st.has_passcode ? "Enter a new passcode to change it" : "At least 6 characters", style: "max-width:280px"});
+  const s2 = step(2, st.has_passcode, "Choose a phone passcode",
+    el("p", {class: "hint", style: "margin:0"}, "Your phone asks for it once, then stays signed in. After 5 wrong tries it locks for 15 minutes. Changing it signs out every phone."),
+    el("form", {class: "row", onsubmit: async (e) => { e.preventDefault();
+      try { await api("/api/phone/passcode", {passcode: pass.value}); toast("Passcode saved."); pass.value = ""; again(); } catch (err) { toast(err.message, 7000); } }},
+      pass, el("button", {class: "btn small primary", type: "submit"}, st.has_passcode ? "Change" : "Save")));
+
+  const s3 = step(3, st.running, "Turn on phone access",
+    el("label", {class: "check"}, el("input", {type: "checkbox", checked: ph.enabled, disabled: !st.has_passcode, onchange: (e) => saveSettings({enabled: e.target.checked}, e.target.checked ? "Phone access on." : "Phone access off.")}),
+      el("span", {}, "Allow my phone to open Trader HQ", !st.has_passcode ? el("small", {style: "display:block"}, "Set a passcode first.") : null)),
+    el("label", {class: "check"}, el("input", {type: "checkbox", checked: ph.keep_mac_awake, onchange: (e) => saveSettings({keep_mac_awake: e.target.checked})}),
+      el("span", {}, "Keep this Mac awake while phone access or a bot is on", el("small", {style: "display:block"}, "Keep it plugged in. Closing the lid still puts most Macs to sleep."))),
+    ph.enabled && !ts.ip ? el("p", {class: "msg err", style: "margin:0"}, "Waiting for Tailscale (step 1).") : null);
+
+  let s4 = null;
+  if (st.running && st.url) {
+    const qrBox = el("div", {class: "qr"});
+    try { const qr = qrcode(0, "M"); qr.addData(st.url); qr.make(); qrBox.innerHTML = qr.createSvgTag({cellSize: 4, margin: 2}); } catch (_) { qrBox.hidden = true; }
+    s4 = step(4, st.sessions.length > 0, "Open it on your iPhone",
+      el("div", {class: "phone-link"}, qrBox,
+        el("div", {style: "display:grid;gap:6px;min-width:0"},
+          el("div", {class: "row"}, el("code", {}, st.url), copy(st.url)),
+          el("ol", {class: "hint", style: "margin:0;padding-left:18px"},
+            el("li", {}, "Make sure Tailscale is on (connected) on the iPhone."),
+            el("li", {}, "Point the iPhone Camera at this code and tap the link (or type the address into Safari)."),
+            el("li", {}, "Enter your passcode."),
+            el("li", {}, "In Safari, tap Share, then Add to Home Screen, for a Trader HQ app icon.")))),
+      st.sessions.length ? el("div", {}, el("b", {}, "Signed-in phones"),
+        el("table", {}, el("tbody", {}, st.sessions.map((x) => el("tr", {}, el("td", {}, x.name), el("td", {class: "muted"}, "since " + new Date(x.created * 1000).toLocaleDateString()),
+          el("td", {class: "muted"}, "last used " + new Date(x.last * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})),
+          el("td", {}, el("button", {class: "btn small danger", type: "button", onclick: async () => { await api("/api/phone/revoke", {id: x.id}); toast("Signed out."); again(); }}, "Sign out")))))),
+        el("button", {class: "btn small", type: "button", onclick: async () => { if (confirm("Sign out every phone?")) { await api("/api/phone/revoke", {}); again(); } }}, "Sign out all phones")) : null);
+  }
+
+  const topic = ph.push_topic;
+  const s5 = step(st.running ? 5 : 4, !!topic, "Phone notifications (optional)",
+    !topic ? el("div", {}, el("p", {class: "hint", style: "margin:0 0 8px"}, "Get a notification on your phone when a trade needs your approval, a goal is reached, an alert fires and more. It uses the free ntfy app and works even without phone access."),
+      el("button", {class: "btn small primary", type: "button", onclick: async () => { await api("/api/phone/new-topic", {}); again(); }}, "Set up notifications"))
+      : el("div", {style: "display:grid;gap:8px"},
+        el("ol", {class: "hint", style: "margin:0;padding-left:18px"},
+          el("li", {}, "On your iPhone, install the free \"ntfy\" app from the App Store and allow notifications."),
+          el("li", {}, "In ntfy, tap +, and subscribe to this topic (leave the server as ntfy.sh):")),
+        el("div", {class: "row topic"}, el("code", {}, topic), copy(topic)),
+        el("div", {class: "form-grid", style: "grid-template-columns:repeat(auto-fill,minmax(230px,1fr))"}, PUSH_KINDS.map(([k, label]) =>
+          el("label", {class: "check"}, el("input", {type: "checkbox", checked: ph[k], onchange: (e) => saveSettings({[k]: e.target.checked})}), el("span", {}, label)))),
+        el("div", {class: "row"},
+          el("button", {class: "btn small primary", type: "button", onclick: async () => { try { await api("/api/phone/test-push", {}); toast("Test sent. It should appear on your phone in a few seconds."); } catch (e) { toast(e.message, 7000); } }}, "Send a test"),
+          el("button", {class: "btn small", type: "button", onclick: async () => { if (confirm("Make a new topic? Your phone stops getting notifications until you subscribe to the new one.")) { await api("/api/phone/new-topic", {}); again(); } }}, "New topic"),
+          el("button", {class: "btn small danger", type: "button", onclick: () => saveSettings({push_topic: ""}, "Phone notifications off.")}, "Turn off")),
+        el("p", {class: "hint", style: "margin:0"}, "The topic name works like a private address: anyone who knows it could read these notifications, so keep it to yourself. Notifications never include keys or passwords.")));
+
+  box.replaceChildren(el("fieldset", {}, el("legend", {}, "Phone access"),
+    el("p", {class: "hint", style: "margin-top:0"}, "Use Trader HQ from your iPhone anywhere: start and stop bots, approve trades, watch Live. Your Mac does the work, so it needs to be on with Trader HQ open."),
+    el("div", {class: "phone-steps"}, s1, s2, s3, s4, s5)));
+};
+
 route();

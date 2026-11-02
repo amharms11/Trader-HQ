@@ -25,6 +25,7 @@ from pathlib import Path
 
 import features as F
 import market as M
+import phone as P
 import trader as T
 import updater as U
 
@@ -32,6 +33,10 @@ PORT = 8780
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "dashboard.html"
 STATIC = {"/assets/favicon.png": ("assets/favicon.png", "image/png"),
+          "/assets/icon-180.png": ("assets/icon-180.png", "image/png"),
+          "/assets/icon-192.png": ("assets/icon-192.png", "image/png"),
+          "/assets/icon-512.png": ("assets/icon-512.png", "image/png"),
+          "/vendor/qrcode.js": ("vendor/qrcode.js", "text/javascript; charset=utf-8"),
           "/market.js": ("market.js", "text/javascript; charset=utf-8"),
           "/features.js": ("features.js", "text/javascript; charset=utf-8"),
           "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8")}
@@ -78,6 +83,10 @@ def clean_settings(posted):
         text = str(value).strip()
         if path == "market.data_feed" and text not in ("iex", "sip"):
             raise ValueError("market.data_feed must be iex or sip")
+        if path == "phone.push_topic":
+            if text and not P.TOPIC_RE.fullmatch(text):
+                raise ValueError("The notification topic should be 12-64 letters, numbers, - or _")
+            return text
         if path == "market.sec_contact_email":
             if text and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
                 raise ValueError("market.sec_contact_email doesn't look like an email address")
@@ -150,6 +159,10 @@ class App:
         self.cday_stop = threading.Event()
         self.cday_next = None
         self.bot_status = {}                     # why a bot isn't searching right now (run hours, daily goal)
+        self.auth = P.Auth()
+        self.phone_server = None                 # the second, passcode-protected address for the phone
+        self.phone_info = {"installed": False, "ip": None, "dns": None}
+        self._caffeinate = None
         self._goal_note = set()
         self.updated_files = []                  # files changed by the update installed at startup
 
@@ -179,9 +192,63 @@ class App:
         return self._store
 
     def notify(self, title, body, kind="info"):
-        mac = self.settings()["market"].get("mac_notifications", True)
-        self.store.notify(title, body, kind, mac=mac)
+        s = self.settings()
+        self.store.notify(title, body, kind, mac=s["market"].get("mac_notifications", True))
         self.log(f"{title}: {body}")
+        self.push(title, body, kind, s)
+
+    def push(self, title, body, kind="info", settings=None, click="#live"):
+        """A notification on the phone (if set up). Tapping it opens Trader HQ when phone access is on."""
+        P.push_async(settings or self.settings(), title, body, kind, click=self.phone_url(click))
+
+    # --- phone access ---
+    def phone_url(self, fragment=""):
+        if not self.phone_server:
+            return None
+        host = self.phone_info.get("dns") or self.phone_info.get("ip")
+        return f"http://{host}:{self.phone_server.server_address[1]}/{fragment}"
+
+    def phone_sync(self, info=None):
+        """Start or stop the phone address to match Settings, Tailscale and whether a passcode is set."""
+        s = self.settings()
+        want = s["phone"]["enabled"] and self.auth.has_passcode()
+        self.phone_info = info or (P.tailscale_info() if want or s["phone"]["enabled"] else self.phone_info)
+        ip = self.phone_info.get("ip") if want else None
+        current = self.phone_server.server_address[0] if self.phone_server else None
+        if current and current != ip:
+            srv, self.phone_server = self.phone_server, None
+            srv.shutdown()
+            srv.server_close()
+            self.log("Phone access is off.")
+        if ip and not self.phone_server:
+            try:
+                srv = make_server(self, PORT, host=ip, remote=True, dns=self.phone_info.get("dns"))
+            except OSError as e:
+                self.log(f"Couldn't turn on phone access at {ip}: {e}")
+                return
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            self.phone_server = srv
+            self.log(f"Phone access is on: {self.phone_url()}")
+
+    def keep_awake(self):
+        """While phone access or a bot is on, stop the Mac from sleeping (macOS `caffeinate`)."""
+        if sys.platform != "darwin":
+            return
+        s = self.settings()
+        busy = self.phone_server or any(t and t.is_alive() for t in (self.day_thread, self.crypto_thread, self.cday_thread))
+        want = s["phone"]["keep_mac_awake"] and busy
+        running = self._caffeinate and self._caffeinate.poll() is None
+        if want and not running:
+            self._caffeinate = subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+        elif not want and running:
+            self._caffeinate.terminate()
+            self._caffeinate = None
+
+    def phone_status(self):
+        s = self.settings()
+        return {"enabled": s["phone"]["enabled"], "has_passcode": self.auth.has_passcode(), "tailscale": self.phone_info,
+                "url": self.phone_url(), "running": bool(self.phone_server), "sessions": self.auth.sessions(),
+                "settings": s["phone"]}
 
     def can_trade_unattended(self):
         """Background jobs (recurring buys, protection) trade on paper, or on live only after LIVE was typed."""
@@ -214,6 +281,8 @@ class App:
             if self.due("crypto_day", 10):
                 jobs.append(("crypto day trades", lambda: [self.log("Crypto day: " + e) for e in
                                                          F.manage_crypto_day(self.data_broker(), self.store, self.market, s, self.notify)]))
+        if self.due("phone", 60):
+            jobs.append(("phone access", lambda: (self.phone_sync(), self.keep_awake())))
         if self.due("summary", 300):
             jobs.append(("daily summary", self.maybe_daily_summary))
         for name, job in jobs:
@@ -722,9 +791,11 @@ class App:
         if not plan.trades:
             self.log(f"{plan.label}: {plan.empty_message}")
         else:
-            waiting = sum(1 for p in self.proposals if p["plan_id"] == entry["id"] and p["status"] == "pending")
+            waiting = [p for p in self.proposals if p["plan_id"] == entry["id"] and p["status"] == "pending"]
             if waiting:
-                self.log(f"{plan.label}: {waiting} suggestion(s) waiting for your approval.")
+                self.log(f"{plan.label}: {len(waiting)} suggestion(s) waiting for your approval.")
+                more = f" (+{len(waiting) - 1} more)" if len(waiting) > 1 else ""
+                self.push("Approval needed", f"{waiting[-1]['headline']}{more}. Valid for {int(ttl // 60)} min.", "approval", s)
         return entry
 
     def decide(self, proposal_id, approve):
@@ -930,13 +1001,32 @@ def make_handler(app, shutdown, restart=lambda: None):
             pass
 
         def _host_ok(self):  # blocks other websites reaching the bot through a look-alike address
-            port = self.server.server_address[1]
-            return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
+            ip, port = self.server.server_address[:2]
+            host = self.headers.get("Host", "")
+            if self.server.remote:
+                names = {ip} | ({self.server.dns} if self.server.dns else set())
+                return host in {f"{n}:{port}" for n in names}
+            return host in (f"127.0.0.1:{port}", f"localhost:{port}")
 
-        def _send(self, code, body, ctype="application/json", filename=None):
+        def _token(self):
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == P.COOKIE:
+                    return v
+            return ""
+
+        def _signed_in(self):
+            return not self.server.remote or app.auth.valid(self._token())
+
+        def _send(self, code, body, ctype="application/json", filename=None, cookie=None):
             data = body if isinstance(body, bytes) else json.dumps(body, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            if cookie is not None:
+                self.send_header("Set-Cookie", f"{P.COOKIE}={cookie}; HttpOnly; SameSite=Strict; Path=/; "
+                                 f"Max-Age={31536000 if cookie else 0}")
+            if self.server.remote:
+                self.send_header("X-Frame-Options", "DENY")
             if filename:
                 self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Cache-Control", "no-store")
@@ -950,9 +1040,24 @@ def make_handler(app, shutdown, restart=lambda: None):
                 return self._send(403, {"error": "forbidden"})
             path, _, query = self.path.partition("?")
             params = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+            if path == "/manifest.webmanifest":
+                return self._send(200, json.dumps(P.MANIFEST).encode(), "application/manifest+json")
+            if self.server.remote and not self._signed_in():
+                if path in ("/", "/index.html"):
+                    return self._send(200, P.LOGIN_PAGE.encode(), "text/html; charset=utf-8")
+                if path in ("/assets/favicon.png", "/assets/icon-180.png", "/assets/icon-192.png", "/assets/icon-512.png"):
+                    file, ctype = STATIC[path]
+                    return self._send(200, (HERE / file).read_bytes(), ctype)
+                return self._send(401, {"error": "Please sign in again.", "login": True})
             try:
                 if path in ("/", "/index.html"):
                     return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+                if path == "/api/phone":
+                    if self.server.remote:
+                        return self._send(403, {"error": REMOTE_ONLY_MAC})
+                    if params.get("refresh"):
+                        app.phone_sync()
+                    return self._send(200, app.phone_status())
                 if path in STATIC:
                     file, ctype = STATIC[path]
                     return self._send(200, (HERE / file).read_bytes(), ctype)
@@ -1031,7 +1136,7 @@ def make_handler(app, shutdown, restart=lambda: None):
                     return self._send(200, {"ok": True})
                 if path == "/api/state":
                     app.expire_old()
-                    return self._send(200, app.state())
+                    return self._send(200, {**app.state(), "remote": self.server.remote})
                 if path == "/api/equity":
                     return self._send(200, app.equity(params.get("period", "1M")))
                 if path == "/api/settings":
@@ -1052,6 +1157,43 @@ def make_handler(app, shutdown, restart=lambda: None):
                 length = min(int(self.headers.get("Content-Length") or 0), 100_000)
                 body = json.loads(self.rfile.read(length) or b"{}")
                 path = self.path
+                if self.server.remote:
+                    if path == "/api/phone/login":
+                        try:
+                            token = app.auth.login(body.get("passcode"), body.get("device"), self.client_address[0])
+                        except PermissionError as e:
+                            return self._send(401, {"error": str(e)})
+                        app.log(f"A phone signed in ({str(body.get('device') or 'Phone')[:40]}).")
+                        return self._send(200, {"ok": True}, cookie=token)
+                    if not self._signed_in():
+                        return self._send(401, {"error": "Please sign in again.", "login": True})
+                    if path == "/api/phone/logout":
+                        app.auth.revoke(token=self._token())
+                        return self._send(200, {"ok": True}, cookie="")
+                    if path in REMOTE_BLOCKED or path.startswith("/api/phone/"):
+                        return self._send(403, {"error": REMOTE_ONLY_MAC})
+                    if path == "/api/settings":
+                        posted = body.get("settings") or {}
+                        if "phone" in posted or ("mode" in posted and posted["mode"] != app.settings()["mode"]):
+                            return self._send(403, {"error": REMOTE_ONLY_MAC})
+                elif path == "/api/phone/passcode":
+                    app.auth.set_passcode(body.get("passcode"))
+                    app.log("Phone passcode set. Any phones that were signed in need to sign in again.")
+                    app.phone_sync()
+                    return self._send(200, app.phone_status())
+                elif path == "/api/phone/revoke":
+                    app.auth.revoke(sid=body.get("id")) if body.get("id") else app.auth.revoke()
+                    return self._send(200, app.phone_status())
+                elif path == "/api/phone/new-topic":
+                    save_settings({"phone": {"push_topic": P.new_topic()}})
+                    return self._send(200, app.phone_status())
+                elif path == "/api/phone/test-push":
+                    try:
+                        P.push(app.settings(), "Trader HQ test", "Phone notifications are working.", "info",
+                               click=app.phone_url("#live"), force=True)
+                    except (OSError, ValueError) as e:
+                        raise RuntimeError(f"Couldn't reach ntfy.sh ({e})") from None
+                    return self._send(200, {"ok": True})
                 if path == "/api/plan":
                     app.start_plan(body.get("kind"))
                 elif path == "/api/decide":
@@ -1158,7 +1300,12 @@ def make_handler(app, shutdown, restart=lambda: None):
     return Handler
 
 
-def make_server(app, port=PORT):
+REMOTE_ONLY_MAC = "For safety, this can only be changed on the Mac."
+# Things a phone can't do: change keys or phone settings, switch paper/live, or quit the app it depends on.
+REMOTE_BLOCKED = {"/api/keys", "/api/anthropic-key", "/api/github-token", "/api/finnhub-key", "/api/quit"}
+
+
+def make_server(app, port=PORT, host="127.0.0.1", remote=False, dns=None):
     holder = {}
 
     def restart():
@@ -1175,9 +1322,22 @@ def make_server(app, port=PORT):
         holder["s"].server_close()
         os.execv(sys.executable, [sys.executable, str(HERE / "trader.py"), "app", "--no-open"])
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, lambda: holder["s"].shutdown(), restart))
+    if remote:  # the phone address restarts with the app; the app's own server does the restart
+        restart = app_restart_via_main
+    server = ThreadingHTTPServer((host, port), make_handler(app, lambda: holder["s"].shutdown(), restart))
+    server.remote, server.dns = remote, dns
     holder["s"] = server
+    if not remote:
+        MAIN["restart"] = restart
     return server
+
+
+MAIN = {}
+
+
+def app_restart_via_main():
+    if MAIN.get("restart"):
+        MAIN["restart"]()
 
 
 def open_window(url):
@@ -1219,6 +1379,7 @@ def serve(open_win=True, port=PORT):
         app.log("Trader HQ was updated to the latest version.")
     threading.Thread(target=app.update_loop, daemon=True).start()
     threading.Thread(target=app.scheduler_loop, daemon=True).start()
+    threading.Thread(target=lambda: (app.phone_sync(), app.keep_awake()), daemon=True).start()
     print(f"Trader HQ dashboard: {url}  (press Quit in the dashboard, or Ctrl+C here, to stop)")
     if open_win:
         threading.Timer(0.5, open_window, args=(url,)).start()

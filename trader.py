@@ -70,6 +70,13 @@ DEFAULT_SETTINGS = {
     "daily_loss_stop_pct": 3,      # no new buys once the account is down this much today
     "limit_slippage_pct": 0.5,     # limit price = last price +/- this %, so a fast move can't fill badly
     "auto_approve": False,         # paper only: place orders that pass every limit without asking
+    "phone": {
+        # Phone access over your private Tailscale network, and push notifications through the ntfy app.
+        "enabled": False,
+        "keep_mac_awake": True,            # stop the Mac from sleeping while phone access or a bot is on
+        "push_topic": "",                  # your private ntfy topic; empty = no phone notifications
+        "push_approvals": True, "push_trades": True, "push_goals_alerts": True, "push_summary": True, "push_errors": True,
+    },
     "auto_rules": {
         # What auto-approve may place on its own (paper only). Everything else still asks.
         "max_usd": 250,                # largest trade (buy or sell) it may approve, in dollars
@@ -170,7 +177,7 @@ def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         saved = json.loads(SETTINGS_FILE.read_text())
-        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto", "crypto_day", "auto_rules")}
+        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto", "crypto_day", "phone", "auto_rules")}
         s.update(saved)
         for k, v in sections.items():
             s[k].update(v)
