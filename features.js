@@ -507,10 +507,10 @@ function liveControls() {
   document.getElementById("liveCryptoStart").hidden = c.running; document.getElementById("liveCryptoStop").hidden = !c.running;
   document.getElementById("liveDayText").textContent = d.running ? `Running, ${cd(d.next_check)}. ${d.entries_today} trade(s) opened today.` : d.flattened ? "Finished for today." : "Stopped.";
   const bs = S.bot_status || {}, cy = S.crypto_day || {};
-  document.getElementById("liveCryptoText").textContent = c.running ? (bs.crypto || `Running, ${cd(c.next_check)}.`) : "Stopped.";
+  document.getElementById("liveCryptoText").textContent = c.running ? (bs.crypto || `Running, ${cd(c.next_check)}.`) : (bs.crypto ? bs.crypto + "." : "Stopped.");
   document.getElementById("liveCdayStart").hidden = cy.running; document.getElementById("liveCdayStop").hidden = !cy.running;
-  document.getElementById("liveCdayText").textContent = cy.running ? (bs.crypto_day || `Running, ${cd(cy.next_check)}.`) : "Stopped.";
-  if (d.running && bs.day) document.getElementById("liveDayText").textContent = bs.day + ".";
+  document.getElementById("liveCdayText").textContent = cy.running ? (bs.crypto_day || `Running, ${cd(cy.next_check)}.`) : (bs.crypto_day ? bs.crypto_day + "." : "Stopped.");
+  if (bs.day && (d.running || /Shut off/.test(bs.day))) document.getElementById("liveDayText").textContent = bs.day + ".";
   const busy = document.getElementById("liveBusy");
   busy.className = "pill " + (S.busy || d.running || c.running || cy.running ? "open" : "");
   busy.lastChild.textContent = S.busy || (d.running || c.running || cy.running ? "Watching the market" : "Idle");
@@ -717,24 +717,28 @@ function botConfig(key, b) {
   if (!box || !b || box.contains(document.activeElement)) return;
   const open = box.querySelector("details") && box.querySelector("details").open;
   const window_ = b.run_from === b.run_to ? "any time" : `${toTime(b.run_from)}–${toTime(b.run_to)} ET`;
-  const goals = [b.target > 0 ? `goal +${money0(b.target)}` : "", b.limit > 0 ? `limit −${money0(b.limit)}` : ""].filter(Boolean).join(", ") || "no daily goal";
+  const dollars = (p) => b.portfolio ? ` (${money0(b.portfolio * p / 100)})` : "";
+  const goals = [b.target_pct > 0 ? `goal +${b.target_pct}%${dollars(b.target_pct)}` : "", b.limit_pct > 0 ? `limit −${b.limit_pct}%${dollars(b.limit_pct)}` : ""].filter(Boolean).join(", ") || "no daily goal";
+  const equiv = (input, out) => { out.textContent = input.value > 0 && b.portfolio ? "≈ " + money(b.portfolio * input.value / 100) + " today" : "off"; };
+  const tOut = el("small", {}), lOut = el("small", {});
   const form = el("form", {class: "bot-cfg-form", onsubmit: async (e) => {
     e.preventDefault(); const f = e.target;
     const from = fromTime(f.from.value), to = fromTime(f.to.value);
     try {
-      await api("/api/settings", {settings: {[key]: {daily_profit_target_usd: f.target.value || 0, daily_loss_limit_usd: f.limit.value || 0,
+      await api("/api/settings", {settings: {[key]: {daily_profit_target_pct: f.target.value || 0, daily_loss_limit_pct: f.limit.value || 0,
         run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value}}});
       toast("Saved. The bot uses these from its next check."); f.closest("details").open = false; liveTick();
     } catch (err) { toast(err.message, 7000); }
   }},
     el("div", {class: "form-grid"},
-      el("label", {}, "Stop for the day at profit ($)", el("input", {type: "number", name: "target", min: 0, step: "any", value: b.target || "", placeholder: "off"})),
-      el("label", {}, "Stop for the day at loss ($)", el("input", {type: "number", name: "limit", min: 0, step: "any", value: b.limit || "", placeholder: "off"})),
+      el("label", {}, "Shut off at profit (% of portfolio)", el("input", {type: "number", name: "target", min: 0, max: 100, step: 0.1, value: b.target_pct || "", placeholder: "off", oninput: (e) => equiv(e.target, tOut)}), tOut),
+      el("label", {}, "Shut off at loss (% of portfolio)", el("input", {type: "number", name: "limit", min: 0, max: 100, step: 0.1, value: b.limit_pct || "", placeholder: "off", oninput: (e) => equiv(e.target, lOut)}), lOut),
       el("label", {}, "Run from (New York time)", el("input", {type: "time", name: "from", value: toTime(b.run_from)})),
       el("label", {}, "Run until", el("input", {type: "time", name: "to", value: toTime(b.run_to)})),
       el("label", {}, "Search every (minutes)", el("input", {type: "number", name: "every", min: 5, max: 240, step: 1, value: b.every || 15}))),
-    el("p", {class: "hint", style: "margin:0"}, "Leave a goal empty for no limit, and both times empty to run any time. When a goal is hit, the bot stops searching until tomorrow; open trades keep their stop-losses and targets. Fewer searches use less of your Claude allowance."),
+    el("p", {class: "hint", style: "margin:0"}, "Percent of your portfolio's value at the start of the day, counting this bot's trades today. When either is reached the bot shuts itself off for the day, so it stops using Claude; open trades keep their stop-losses and targets. Leave empty for no limit, and both times empty to run any time."),
     el("div", {}, el("button", {class: "btn small primary", type: "submit"}, "Save")));
+  setTimeout(() => { equiv(form.target, tOut); equiv(form.limit, lOut); }, 0);
   box.replaceChildren(
     el("div", {class: "row bot-today"}, el("span", {}, "Today: ", el("b", {class: tone(b.total)}, signed(b.total))),
       el("span", {class: "muted"}, `· ${goals} · ${window_} · every ${b.every || "?"} min`)),

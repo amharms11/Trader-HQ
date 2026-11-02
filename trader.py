@@ -87,8 +87,8 @@ DEFAULT_SETTINGS = {
         "max_take_profit_pct": 6,
         "no_new_entries_min_before_close": 30,
         "flatten_min_before_close": 10,  # sell all day positions this many minutes before the close
-        "daily_profit_target_usd": 0,      # >0: stop searching for the day once this bot is up this much
-        "daily_loss_limit_usd": 0,         # >0: stop searching for the day once this bot is down this much
+        "daily_profit_target_pct": 0,      # >0: shut this bot off for the day once it's up this % of the portfolio
+        "daily_loss_limit_pct": 0,         # >0: shut this bot off for the day once it's down this % of the portfolio
         "run_from_hhmm": 0,                # run hours in New York time, e.g. 945 to 1530; 0 and 0 = any time
         "run_to_hhmm": 0,
     },
@@ -125,8 +125,8 @@ DEFAULT_SETTINGS = {
         "max_order_usd": 200,
         "max_position_pct": 10,             # no coin above this % of the account
         "max_stop_loss_pct": 8,             # widest stop-loss allowed on a crypto buy
-        "daily_profit_target_usd": 0,      # >0: stop searching for the day once this bot is up this much
-        "daily_loss_limit_usd": 0,         # >0: stop searching for the day once this bot is down this much
+        "daily_profit_target_pct": 0,      # >0: shut this bot off for the day once it's up this % of the portfolio
+        "daily_loss_limit_pct": 0,         # >0: shut this bot off for the day once it's down this % of the portfolio
         "run_from_hhmm": 0,                # run hours in New York time, e.g. 945 to 1530; 0 and 0 = any time
         "run_to_hhmm": 0,
     },
@@ -142,8 +142,8 @@ DEFAULT_SETTINGS = {
         "max_stop_loss_pct": 3,
         "max_take_profit_pct": 6,
         "close_all_hhmm": 2330,             # sell all crypto day trades at this New York time every day
-        "daily_profit_target_usd": 0,
-        "daily_loss_limit_usd": 0,
+        "daily_profit_target_pct": 0,
+        "daily_loss_limit_pct": 0,
         "run_from_hhmm": 800,
         "run_to_hhmm": 2300,
     },

@@ -532,10 +532,12 @@ class WindowGoalTests(unittest.TestCase):
         self.assertEqual((T.fmt_hhmm(945), T.fmt_hhmm(2330), T.fmt_hhmm(0)), ("9:45 AM", "11:30 PM", "12:00 AM"))
 
     def test_goal_hit(self):
-        self.assertIsNone(F.goal_hit({"daily_profit_target_usd": 0, "daily_loss_limit_usd": 0}, 500))
-        self.assertEqual(F.goal_hit({"daily_profit_target_usd": 100}, 100.0), "profit")
-        self.assertEqual(F.goal_hit({"daily_loss_limit_usd": 50}, -50.0), "loss")
-        self.assertIsNone(F.goal_hit({"daily_profit_target_usd": 100, "daily_loss_limit_usd": 50}, 20))
+        self.assertIsNone(F.goal_hit({"daily_profit_target_pct": 0, "daily_loss_limit_pct": 0}, 500, 10_000))
+        self.assertEqual(F.goal_hit({"daily_profit_target_pct": 1}, 100.0, 10_000), "profit")     # 1% of $10,000
+        self.assertIsNone(F.goal_hit({"daily_profit_target_pct": 1}, 99.0, 10_000))
+        self.assertEqual(F.goal_hit({"daily_loss_limit_pct": 0.5}, -50.0, 10_000), "loss")        # 0.5% of $10,000
+        self.assertIsNone(F.goal_hit({"daily_profit_target_pct": 1, "daily_loss_limit_pct": 0.5}, 20, 10_000))
+        self.assertEqual(F.goal_amounts({"daily_profit_target_pct": 2, "daily_loss_limit_pct": 0}, 50_000), (1000, None))
 
     def test_bot_pl_today(self):
         now = dt.datetime.now(dt.timezone.utc)
@@ -646,26 +648,46 @@ class GateTests(Base):
         self.server.server_close()
         Base.tearDown(self)
     def test_run_hours_gate(self):
-        sec = {"run_from_hhmm": 0, "run_to_hhmm": 1, "daily_profit_target_usd": 0, "daily_loss_limit_usd": 0}
+        sec = {"run_from_hhmm": 0, "run_to_hhmm": 1, "daily_profit_target_pct": 0, "daily_loss_limit_pct": 0}
         with mock.patch.object(T, "in_run_window", return_value=False):
-            self.assertFalse(self.app.bot_gate("day", {**sec, "run_from_hhmm": 945, "run_to_hhmm": 1530}))
+            self.assertEqual(self.app.bot_gate("day", {**sec, "run_from_hhmm": 945, "run_to_hhmm": 1530}), "wait")
         self.assertIn("9:45 AM to 3:30 PM", self.app.bot_status["day"])
 
     def test_goal_gate_notifies_once(self):
-        sec = {"run_from_hhmm": 0, "run_to_hhmm": 0, "daily_profit_target_usd": 25, "daily_loss_limit_usd": 0}
-        with mock.patch.object(self.app, "bot_pl", return_value={"total": 30.0}):
-            self.assertFalse(self.app.bot_gate("crypto_day", sec))
-            self.assertFalse(self.app.bot_gate("crypto_day", sec))
-        self.assertIn("Daily profit goal reached", self.app.bot_status["crypto_day"])
+        sec = {"run_from_hhmm": 0, "run_to_hhmm": 0, "daily_profit_target_pct": 0.5, "daily_loss_limit_pct": 0.25}
+        # the fake account's value at the start of the day is $10,000: goal $50, limit $25
+        with mock.patch.object(self.app, "bot_pl", return_value={"total": 51.0}):
+            self.assertEqual(self.app.bot_gate("crypto_day", sec), "goal")
+            self.assertEqual(self.app.bot_gate("crypto_day", sec), "goal")
+        self.assertIn("daily profit goal of +0.5% reached", self.app.bot_status["crypto_day"])
+        self.assertIn("+0.51% of the portfolio", self.app.bot_status["crypto_day"])
         self.assertEqual(sum(n["kind"] == "goal" for n in self.store.notifications()), 1)
+        with mock.patch.object(self.app, "bot_pl", return_value={"total": -25.0}):
+            self.assertEqual(self.app.bot_gate("crypto", sec), "goal")
+        self.assertIn("loss limit of -0.25%", self.app.bot_status["crypto"])
         with mock.patch.object(self.app, "bot_pl", return_value={"total": 10.0}):
-            self.assertTrue(self.app.bot_gate("crypto_day", sec))
-            self.assertEqual(self.app.bot_status["crypto_day"], "")
+            self.assertEqual(self.app.bot_gate("crypto_day", sec), "ok")
+
+    def test_bots_shut_off_when_goal_hit(self):
+        D.save_settings({"crypto_day": {"daily_profit_target_pct": 0.5, "run_from_hhmm": 0, "run_to_hhmm": 0},
+                         "crypto": {"daily_profit_target_pct": 0.5}})
+        with mock.patch.object(self.app, "bot_pl", return_value={"total": 60.0}), \
+             mock.patch.object(F, "minutes_to", return_value=600), \
+             mock.patch.object(F, "CryptoDayPlan", side_effect=AssertionError("must not ask Claude")), \
+             mock.patch.object(F, "CryptoPlan", side_effect=AssertionError("must not ask Claude")):
+            self.app.start_crypto_day()
+            self.app.start_crypto()
+            self.app.cday_thread.join(5)
+            self.app.crypto_thread.join(5)
+        self.assertFalse(self.app.cday_thread.is_alive())
+        self.assertFalse(self.app.crypto_thread.is_alive())
+        self.assertTrue(self.app.bot_status["crypto_day"].startswith("Shut off for today"))
+        self.assertFalse(self.req("/api/state")[1]["crypto_day"]["running"])
 
     def test_time_settings_validated(self):
         self.assertEqual(self.req("/api/settings", {"settings": {"crypto_day": {"run_from_hhmm": 2399}}})[0], 400)
-        self.assertEqual(self.req("/api/settings", {"settings": {"crypto_day": {"run_from_hhmm": 930, "daily_profit_target_usd": 40}}})[0], 200)
-        self.assertEqual(T.load_settings()["crypto_day"]["daily_profit_target_usd"], 40)
+        self.assertEqual(self.req("/api/settings", {"settings": {"crypto_day": {"run_from_hhmm": 930, "daily_profit_target_pct": 1.5}}})[0], 200)
+        self.assertEqual(T.load_settings()["crypto_day"]["daily_profit_target_pct"], 1.5)
 
     def test_live_shows_crypto_day_target_and_bots(self):
         self.store.x("INSERT INTO crypto_day_trades (order_id, symbol, amount, qty, entry, stop, target, stop_pct, take_pct, stop_order_id, "

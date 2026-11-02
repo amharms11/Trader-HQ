@@ -137,7 +137,7 @@ Short crypto trades, like stock day trading but adjusted for crypto's 24/7 marke
 
 ## Daily goals and run hours (each automatic bot)
 Day trading, the crypto bot and crypto day trading each have **Goals & hours** on the Live tab:
-- **Stop for the day at profit / loss:** when that bot is up (or down) this much today, it stops searching until tomorrow. Open trades keep their stop-losses and targets, and stock day trades still close before the bell.
+- **Shut off at profit / loss (% of portfolio):** for example +1% or −0.5% of your portfolio's value at the start of the day, counting that bot's trades today. When either is reached, the bot **shuts itself off for the day**, so it sends no more requests to Claude. Open trades keep their stop-losses and targets, and stock day trades still close before the bell. Start it again tomorrow.
 - **Run hours** (New York time): the bot only searches between these times. Started outside them, it waits. Overnight windows like 10 PM–6 AM work too.
 - **Search every N minutes.**
 

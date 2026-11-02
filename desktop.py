@@ -248,29 +248,38 @@ class App:
         prices = {p["symbol"].replace("/", ""): float(p.get("current_price") or 0) for p in self.cached("positions", 4, b.positions)}
         return F.bot_pl_today(fills, self.BOT_NAMES[key], prices)
 
+    def portfolio_value(self):
+        """The account's value at the start of today (yesterday's close), used for the % goals."""
+        acct = self.cached("account", 30, self.data_broker().account)
+        return float(acct.get("last_equity") or acct.get("equity") or 0)
+
     def bot_gate(self, key, sec):
-        """Whether a bot may search for trades right now. Records the reason when it may not."""
-        if not T.in_run_window(sec):
-            self.bot_status[key] = (f"Waiting for run hours ({T.fmt_hhmm(sec['run_from_hhmm'])} to "
-                                    f"{T.fmt_hhmm(sec['run_to_hhmm'])} ET)")
-            return False
-        if M.num(sec.get("daily_profit_target_usd"), 0) > 0 or M.num(sec.get("daily_loss_limit_usd"), 0) > 0:
+        """'ok' if a bot may search for trades now, 'wait' outside its run hours, or 'goal' once its daily
+        profit goal or loss limit is reached (then it shuts off for the day). Records the reason."""
+        if M.num(sec.get("daily_profit_target_pct"), 0) > 0 or M.num(sec.get("daily_loss_limit_pct"), 0) > 0:
             try:
-                pl = self.bot_pl(key)["total"]
+                pl, value = self.bot_pl(key)["total"], self.portfolio_value()
             except RuntimeError:
-                pl = 0.0
-            hit = F.goal_hit(sec, pl)
+                pl, value = 0.0, 0.0
+            hit = F.goal_hit(sec, pl, value) if value else None
             if hit:
-                text = (f"Daily profit goal reached ({T.money(pl)})" if hit == "profit"
-                        else f"Daily loss limit reached ({T.money(pl)})") + ": done searching for today"
+                pct_now = pl / value * 100
+                what = (f"daily profit goal of +{sec['daily_profit_target_pct']:g}% reached" if hit == "profit"
+                        else f"daily loss limit of -{sec['daily_loss_limit_pct']:g}% reached")
+                text = f"Shut off for today: {what} ({T.money(pl)}, {pct_now:+.2f}% of the portfolio)"
                 mark = (key, F.today_et().isoformat())
                 if mark not in self._goal_note:
                     self._goal_note.add(mark)
-                    self.notify(self.BOT_NAMES[key], text + ". Open trades keep their stop-losses and targets.", "goal")
+                    self.notify(self.BOT_NAMES[key], text + ". No more searches today, so no more Claude usage. "
+                                "Open trades keep their stop-losses and targets.", "goal")
                 self.bot_status[key] = text
-                return False
+                return "goal"
+        if not T.in_run_window(sec):
+            self.bot_status[key] = (f"Waiting for run hours ({T.fmt_hhmm(sec['run_from_hhmm'])} to "
+                                    f"{T.fmt_hhmm(sec['run_to_hhmm'])} ET)")
+            return "wait"
         self.bot_status[key] = ""
-        return True
+        return "ok"
 
     # --- crypto day trading loop ---
     def start_crypto_day(self):
@@ -279,6 +288,7 @@ class App:
         b = self.broker()
         if not T.claude_backend():
             raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
+        self.bot_status["crypto_day"] = ""
         self.cday_stop.clear()
         self.cday_thread = threading.Thread(target=self._crypto_day_loop, args=(b,), daemon=True)
         self.cday_thread.start()
@@ -296,7 +306,11 @@ class App:
                     self.cday_next = None
                     self.cday_stop.wait(60)
                     continue
-                if not self.bot_gate("crypto_day", sec):
+                gate = self.bot_gate("crypto_day", sec)
+                if gate == "goal":
+                    self.log("Crypto day trading: " + self.bot_status["crypto_day"] + ".")
+                    break  # shut off; the trade watcher still manages open trades
+                if gate == "wait":
                     self.cday_next = None
                     self.cday_stop.wait(60)
                     continue
@@ -325,6 +339,7 @@ class App:
         b, s = self.broker(), self.settings()
         if not T.claude_backend():
             raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
+        self.bot_status["crypto"] = ""
         self.crypto_stop.clear()
         self.crypto_thread = threading.Thread(target=self._crypto_loop, args=(b, s), daemon=True)
         self.crypto_thread.start()
@@ -334,7 +349,11 @@ class App:
         progress = self.set_busy("Crypto")
         try:
             while not self.crypto_stop.is_set() and not self.stopping.is_set():
-                if not self.bot_gate("crypto", self.settings()["crypto"]):
+                gate = self.bot_gate("crypto", self.settings()["crypto"])
+                if gate == "goal":
+                    self.log("Crypto bot: " + self.bot_status["crypto"] + ".")
+                    break  # shut off; stop-losses already placed stay with Alpaca
+                if gate == "wait":
                     self.crypto_next = None
                     self.crypto_stop.wait(60)
                     continue
@@ -448,6 +467,10 @@ class App:
     def _bots_today(self):
         out = {}
         s = self.settings()
+        try:
+            value = self.portfolio_value()
+        except RuntimeError:
+            value = 0.0
         for key in self.BOT_NAMES:
             sec = s[key]
             try:
@@ -455,7 +478,8 @@ class App:
             except RuntimeError:
                 pl = {"realized": 0, "unrealized": 0, "total": 0}
             out[key] = {**pl, "status": self.bot_status.get(key, ""), "in_hours": T.in_run_window(sec),
-                        "target": sec.get("daily_profit_target_usd", 0), "limit": sec.get("daily_loss_limit_usd", 0),
+                        "target_pct": sec.get("daily_profit_target_pct", 0), "limit_pct": sec.get("daily_loss_limit_pct", 0),
+                        "portfolio": value,
                         "run_from": sec.get("run_from_hhmm", 0), "run_to": sec.get("run_to_hhmm", 0),
                         "every": sec.get("check_every_min")}
         return out
@@ -792,6 +816,7 @@ class App:
         if state["flattened"]:
             raise ValueError("Day trading already finished for today (positions were closed).")
         self.day_state = state
+        self.bot_status["day"] = ""
         self.day_stop.clear()
         self.day_thread = threading.Thread(target=self._day_loop, args=(b, s, state), daemon=True)
         self.day_thread.start()
@@ -802,7 +827,10 @@ class App:
         try:
             while not self.day_stop.is_set() and not self.stopping.is_set():
                 sec = self.settings()["day"]
-                if not self.bot_gate("day", sec):
+                gate = self.bot_gate("day", sec)
+                if gate == "goal" and self.due("day-goal-log", 3600):
+                    self.log("Day trading: " + self.bot_status["day"] + ". Day trades still close before the bell, then it stops.")
+                if gate != "ok":
                     try:  # still close day trades before the bell, even while not searching
                         clock = b.clock()
                         near_close = not clock["is_open"] or T.minutes_until_close(clock) <= sec["flatten_min_before_close"]

@@ -827,12 +827,19 @@ def bot_pl_today(fills, strategy, prices, today=None):
     return {"realized": realized, "unrealized": unrealized, "total": realized + unrealized}
 
 
-def goal_hit(section, pl_total):
+def goal_amounts(section, portfolio):
+    """The bot's daily goal and loss limit in dollars: a % of the portfolio's value at the start of the day."""
+    target = M.num(section.get("daily_profit_target_pct"), 0)
+    limit = M.num(section.get("daily_loss_limit_pct"), 0)
+    return (portfolio * target / 100 if target > 0 else None), (portfolio * limit / 100 if limit > 0 else None)
+
+
+def goal_hit(section, pl_total, portfolio):
     """'profit' or 'loss' once the bot's daily goal or loss limit is reached, else None."""
-    target, limit = M.num(section.get("daily_profit_target_usd"), 0), M.num(section.get("daily_loss_limit_usd"), 0)
-    if target > 0 and pl_total >= target:
+    target, limit = goal_amounts(section, portfolio)
+    if target and pl_total >= target:
         return "profit"
-    if limit > 0 and pl_total <= -limit:
+    if limit and pl_total <= -limit:
         return "loss"
     return None
 
