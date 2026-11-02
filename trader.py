@@ -87,6 +87,10 @@ DEFAULT_SETTINGS = {
         "max_take_profit_pct": 6,
         "no_new_entries_min_before_close": 30,
         "flatten_min_before_close": 10,  # sell all day positions this many minutes before the close
+        "daily_profit_target_usd": 0,      # >0: stop searching for the day once this bot is up this much
+        "daily_loss_limit_usd": 0,         # >0: stop searching for the day once this bot is down this much
+        "run_from_hhmm": 0,                # run hours in New York time, e.g. 945 to 1530; 0 and 0 = any time
+        "run_to_hhmm": 0,
     },
     "options": {
         # Buying calls and puts only: the most any trade can lose is what was paid for it.
@@ -121,6 +125,27 @@ DEFAULT_SETTINGS = {
         "max_order_usd": 200,
         "max_position_pct": 10,             # no coin above this % of the account
         "max_stop_loss_pct": 8,             # widest stop-loss allowed on a crypto buy
+        "daily_profit_target_usd": 0,      # >0: stop searching for the day once this bot is up this much
+        "daily_loss_limit_usd": 0,         # >0: stop searching for the day once this bot is down this much
+        "run_from_hhmm": 0,                # run hours in New York time, e.g. 945 to 1530; 0 and 0 = any time
+        "run_to_hhmm": 0,
+    },
+    "crypto_day": {
+        # Crypto day trading: short trades with a stop-loss and a target, closed by a daily time (crypto never closes).
+        "watchlist": ["BTC/USD", "ETH/USD"],
+        "strategy": ("Cautious intraday crypto trading. Only enter on a clear setup in the 5-minute data, like a "
+                     "pullback to VWAP in an uptrend. Small size, tight stops. Skipping is fine."),
+        "check_every_min": 15,
+        "max_entries_per_day": 6,
+        "max_order_usd": 300,
+        "max_risk_per_trade_usd": 15,       # loss if the stop-loss is hit
+        "max_stop_loss_pct": 3,
+        "max_take_profit_pct": 6,
+        "close_all_hhmm": 2330,             # sell all crypto day trades at this New York time every day
+        "daily_profit_target_usd": 0,
+        "daily_loss_limit_usd": 0,
+        "run_from_hhmm": 800,
+        "run_to_hhmm": 2300,
     },
 }
 
@@ -144,11 +169,11 @@ def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         saved = json.loads(SETTINGS_FILE.read_text())
-        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto", "auto_rules")}
+        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto", "crypto_day", "auto_rules")}
         s.update(saved)
         for k, v in sections.items():
             s[k].update(v)
-    for section in (s, s["day"], s["options"], s["crypto"]):
+    for section in (s, s["day"], s["options"], s["crypto"], s["crypto_day"]):
         section["watchlist"] = [str(x).upper().strip() for x in section["watchlist"] if str(x).strip()]
     if s["market"]["data_feed"] not in ("iex", "sip"):
         s["market"]["data_feed"] = "iex"
@@ -242,7 +267,29 @@ def confirm_mode(settings):
     print()
 
 
-AUTO_KINDS = {"run": "long_term", "day": "day", "options": "options", "crypto": "crypto"}
+AUTO_KINDS = {"run": "long_term", "day": "day", "options": "options", "crypto": "crypto", "crypto_day": "crypto"}
+
+
+def hhmm_minutes(v):
+    v = int(v or 0)
+    return (v // 100) * 60 + v % 100
+
+
+def in_run_window(section, now=None):
+    """True if `now` (New York time) is inside the section's run hours. 0 to 0 means any time;
+    a start later than the end means overnight, e.g. 2200 to 0600."""
+    start, end = hhmm_minutes(section.get("run_from_hhmm")), hhmm_minutes(section.get("run_to_hhmm"))
+    if start == end:
+        return True
+    now = now or dt.datetime.now(ET)
+    m = now.hour * 60 + now.minute
+    return start <= m < end if start < end else (m >= start or m < end)
+
+
+def fmt_hhmm(v):
+    m = hhmm_minutes(v)
+    h, mm = divmod(m, 60)
+    return f"{(h % 12) or 12}:{mm:02d} {'AM' if h < 12 else 'PM'}"
 
 
 def can_auto_approve(settings, kind=None, value=None):
@@ -920,7 +967,7 @@ def cancel_protection(broker, symbol):
     except (RuntimeError, AttributeError):
         return []
     ids = [o["id"] for o in orders if o.get("symbol", "").replace("/", "") == key and o.get("side") == "sell"
-           and (o.get("client_order_id") or "").startswith(("amht-", "amhc-"))]
+           and (o.get("client_order_id") or "").startswith(("amht-", "amhc-", "amhy-"))]
     if ids:
         cancel_and_wait(broker, ids)
     return ids

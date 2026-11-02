@@ -219,8 +219,14 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .cal-month { display: flex; justify-content: space-between; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--raised); cursor: pointer; }
 .cal-month.on { border-color: var(--accent); }
 @media (max-width: 700px) { .cal-cell { min-height: 64px; padding: 4px; } .cal-amt { font-size: 11px; } .cal-pct, .cal-fills { display: none; } }
+.bot-cfg { display: grid; gap: 6px; align-content: start; }
+.bot-today { font-size: 13px; gap: 6px; }
+.bot-cfg details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+.bot-cfg-form { display: grid; gap: 8px; margin-top: 8px; }
+.bot-cfg-form .form-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .live-bots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
-.live-bot { display: grid; gap: 6px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--raised); }
+.live-bot { display: flex; flex-direction: column; align-items: stretch; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--raised); }
+.live-bot .bot-cfg { order: 9; border-top: 1px solid var(--border); padding-top: 8px; }
 .live-chart { height: 420px; margin-top: 6px; }
 .live-feed { max-height: 470px; }
 .feed-trade { font-weight: 600; } .feed-warn { color: var(--down); }
@@ -341,6 +347,8 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
             <button class="btn primary" type="button" data-plan="crypto">Ask Claude about crypto</button>
             <button class="btn" type="button" id="cryptoStart">Start crypto bot</button>
             <button class="btn" type="button" id="cryptoStop" hidden>Stop crypto bot</button>
+            <button class="btn" type="button" id="cdayStart">Start crypto day trading</button>
+            <button class="btn" type="button" id="cdayStop" hidden>Stop crypto day trading</button>
           </div>
         </div>
       </section>
@@ -722,6 +730,19 @@ const LABELS = {
   "crypto.max_order_usd": ["Largest crypto buy ($)", ""],
   "crypto.max_position_pct": ["Max size of one coin (% of account)", ""],
   "crypto.max_stop_loss_pct": ["Widest crypto stop-loss (%)", "Every crypto-bot buy gets a stop-loss after it fills."],
+  daily_profit_target_usd: ["Stop for the day at profit ($)", "0 = off. When this bot is up this much today, it stops searching."],
+  daily_loss_limit_usd: ["Stop for the day at loss ($)", "0 = off. When this bot is down this much today, it stops searching."],
+  run_from_hhmm: ["Run from (HHMM, New York)", "E.g. 945 for 9:45 AM. 0 and 0 = any time."],
+  run_to_hhmm: ["Run until (HHMM, New York)", "E.g. 1530 for 3:30 PM."],
+  "crypto_day.watchlist": ["Crypto day-trading list", "Coins it may day trade, like BTC/USD, ETH/USD."],
+  "crypto_day.strategy": ["Crypto day-trading strategy", "Your instructions to Claude for crypto day trades."],
+  "crypto_day.check_every_min": ["Search every (minutes)", ""],
+  "crypto_day.max_entries_per_day": ["Crypto day trades per day", ""],
+  "crypto_day.max_order_usd": ["Largest crypto day trade ($)", ""],
+  "crypto_day.max_risk_per_trade_usd": ["Max loss per crypto day trade ($)", "If its stop-loss is hit."],
+  "crypto_day.max_stop_loss_pct": ["Widest stop-loss (%)", ""],
+  "crypto_day.max_take_profit_pct": ["Furthest target (%)", ""],
+  close_all_hhmm: ["Close all crypto day trades at (HHMM, New York)", "Crypto never closes, so this is the daily cut-off. E.g. 2330 = 11:30 PM."],
   data_feed: ["Price data feed", "IEX is free and real-time for one exchange. SIP covers all exchanges and needs a paid Alpaca data plan."],
   max_manual_order_usd: ["Largest buy you place yourself ($)", "For the order ticket on stock and crypto pages."],
   confirm_manual_orders: ["Review step before sending orders", "Turn off for one-click orders on paper. Always on in live mode."],
@@ -731,7 +752,7 @@ const LABELS = {
   "options.watchlist": ["Options watchlist", "Stocks/ETFs whose calls and puts may be bought."],
   "options.strategy": ["Options strategy", "Your instructions to Claude for calls and puts, in plain English."],
 };
-const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"], ["Crypto bot", "crypto"], ["Markets & order ticket", "market"]];
+const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"], ["Crypto bot", "crypto"], ["Crypto day trading", "crypto_day"], ["Markets & order ticket", "market"]];
 function field(name, def, val, section) {
   const [label, help] = LABELS[(section ? section + "." : "") + name] || LABELS[name] || [name, ""];
   const lab = (input) => el("label", {}, label, help ? el("small", {}, help) : null, input);

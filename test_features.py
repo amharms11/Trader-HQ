@@ -512,3 +512,168 @@ class AppTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+ET_NOON = dt.datetime(2026, 11, 2, 12, 0, tzinfo=T.ET)
+
+
+class WindowGoalTests(unittest.TestCase):
+    def test_run_window(self):
+        at = lambda h, m=0: ET_NOON.replace(hour=h, minute=m)
+        self.assertTrue(T.in_run_window({"run_from_hhmm": 0, "run_to_hhmm": 0}, at(3)))
+        day = {"run_from_hhmm": 945, "run_to_hhmm": 1530}
+        self.assertFalse(T.in_run_window(day, at(9, 44)))
+        self.assertTrue(T.in_run_window(day, at(9, 45)))
+        self.assertFalse(T.in_run_window(day, at(15, 30)))
+        night = {"run_from_hhmm": 2200, "run_to_hhmm": 600}
+        self.assertTrue(T.in_run_window(night, at(23)))
+        self.assertTrue(T.in_run_window(night, at(5, 59)))
+        self.assertFalse(T.in_run_window(night, at(12)))
+        self.assertEqual((T.fmt_hhmm(945), T.fmt_hhmm(2330), T.fmt_hhmm(0)), ("9:45 AM", "11:30 PM", "12:00 AM"))
+
+    def test_goal_hit(self):
+        self.assertIsNone(F.goal_hit({"daily_profit_target_usd": 0, "daily_loss_limit_usd": 0}, 500))
+        self.assertEqual(F.goal_hit({"daily_profit_target_usd": 100}, 100.0), "profit")
+        self.assertEqual(F.goal_hit({"daily_loss_limit_usd": 50}, -50.0), "loss")
+        self.assertIsNone(F.goal_hit({"daily_profit_target_usd": 100, "daily_loss_limit_usd": 50}, 20))
+
+    def test_bot_pl_today(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        iso = lambda m: (now - dt.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        fills = F.fetch_fills(type("B", (), {"_api": lambda self, *a, **k: [
+            order("a", "AAPL", "buy", 10, 100, iso(60), "amhd-1"), order("b", "AAPL", "sell", 10, 103, iso(30), "amhd-2"),
+            order("c", "SPY", "buy", 2, 500, iso(20), "amhd-3"), order("d", "QQQ", "buy", 1, 400, iso(10), "amh-1")]})())
+        pl = F.bot_pl_today(fills, "Day trading", {"SPY": 495, "QQQ": 410})
+        self.assertAlmostEqual(pl["realized"], 30)
+        self.assertAlmostEqual(pl["unrealized"], -10)   # the long-term bot's QQQ isn't counted
+        self.assertAlmostEqual(pl["total"], 20)
+
+
+class CryptoDayTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.s = T.load_settings()
+        self.s["crypto_day"]["watchlist"] = ["BTC/USD"]
+
+    def plan(self, trades, now=ET_NOON):
+        with mock.patch.object(T, "ask_claude", return_value={"outlook": "calm", "trades": [], "raw_trades": trades}):
+            return F.CryptoDayPlan(self.b, self.s, self.mk, self.store, progress=lambda *_: None, now=now)
+
+    def t(self, **kw):
+        return {"symbol": "BTC/USD", "side": "buy", "amount_usd": 200, "stop_loss_pct": 1, "take_profit_pct": 2, "reason": "r", "risk": "k", **kw}
+
+    def test_checks(self):
+        self.s["crypto_day"]["max_risk_per_trade_usd"] = 8
+        p = self.plan([])
+        ok, why, o = p.check(F.parse_crypto_day(self.t()))
+        self.assertTrue(ok, why)
+        self.assertAlmostEqual(o["risk"], 2)
+        self.assertAlmostEqual(o["target_price"], 61200)
+        for bad, word in ((self.t(symbol="ETH/USD"), "list"), (self.t(amount_usd=400), "between"), (self.t(stop_loss_pct=5), "stop-loss"),
+                          (self.t(take_profit_pct=9), "target"), (self.t(amount_usd=300, stop_loss_pct=3, take_profit_pct=5), "over your"),
+                          (self.t(side="sell"), "no open")):
+            ok, why, _ = p.check(F.parse_crypto_day(bad))
+            self.assertFalse(ok, bad)
+            self.assertIn(word, why)
+        late = self.plan([], now=ET_NOON.replace(hour=23, minute=10))  # 20 minutes before the 11:30 PM close-all
+        self.assertIn("close-all", late.check(F.parse_crypto_day(self.t()))[1])
+
+    def test_lifecycle_fill_stop_target(self):
+        p = self.plan([self.t()])
+        ok, _, o = p.check(p.trades[0])
+        order = p.place(p.trades[0], o, 1)
+        self.assertTrue(self.b.orders[0]["client_order_id"].startswith("amhy-"))
+        self.assertEqual(self.b.orders[0]["notional"], "200.00")
+        self.b.get_order = lambda oid: {"status": "filled", "filled_qty": "0.003", "filled_avg_price": "60000"} if oid == order["id"] else {"status": "new"}
+        ev = F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON)
+        self.assertIn("stop", ev[0])
+        stop = self.b.orders[-1]
+        self.assertEqual((stop["type"], stop["qty"], stop["client_order_id"][:7]), ("stop_limit", "0.003", "amhy-s-"))
+        self.assertAlmostEqual(float(stop["stop_price"]), 59400)
+        row = F.crypto_day_rows(self.store, "paper")[0]
+        self.assertEqual((row["status"], row["target"]), ("open", 61200))
+        self.assertEqual(F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON), [])  # $60,000 < target
+        self.mk.quotes = lambda syms: {"BTC/USD": {"price": 61250}}
+        ev = F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON)
+        self.assertIn("target reached", ev[0])
+        self.assertEqual(self.b.cancelled, [row["stop_order_id"]])
+        self.assertEqual((self.b.orders[-1]["side"], self.b.orders[-1]["type"], self.b.orders[-1]["qty"]), ("sell", "market", "0.003"))
+        self.assertEqual(F.crypto_day_rows(self.store, "paper"), [])
+
+    def open_trade(self, day=None):
+        self.store.x("INSERT INTO crypto_day_trades (order_id, symbol, amount, qty, entry, stop, target, stop_pct, take_pct, stop_order_id, "
+                     "status, opened, mode, day) VALUES ('o','BTC/USD',200,0.003,60000,59400,61200,1,2,'s1','open',0,'paper',?)",
+                     (day or ET_NOON.date().isoformat(),))
+
+    def test_stop_filled_and_close_all(self):
+        self.open_trade()
+        self.b.get_order = lambda oid: {"status": "filled", "filled_avg_price": "59400"}
+        self.assertIn("stop-loss hit", F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON)[0])
+        self.open_trade()
+        self.b.get_order = lambda oid: {"status": "new"}
+        ev = F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON.replace(hour=23, minute=30))
+        self.assertIn("close-all", ev[0])
+        self.open_trade(day="2026-11-01")  # left open overnight (app was closed): closed at the next check
+        self.assertIn("close-all", F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON)[0])
+
+    def test_auto_approve_uses_crypto_switch(self):
+        s = settings_with(auto_approve=True)
+        self.assertTrue(T.can_auto_approve(s, "crypto_day", 100))
+        s["auto_rules"]["crypto"] = False
+        self.assertFalse(T.can_auto_approve(s, "crypto_day", 100))
+
+
+def settings_with(**kw):
+    s = T.load_settings()
+    s.update(kw)
+    return s
+
+
+class GateTests(Base):
+    req = AppTests.req
+
+    def setUp(self):
+        Base.setUp(self)
+        self.app = D.App(broker_factory=lambda mode: self.b)
+        self.app.market = self.mk
+        self.app._store = self.store
+        self.server = D.make_server(self.app, port=0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        Base.tearDown(self)
+    def test_run_hours_gate(self):
+        sec = {"run_from_hhmm": 0, "run_to_hhmm": 1, "daily_profit_target_usd": 0, "daily_loss_limit_usd": 0}
+        with mock.patch.object(T, "in_run_window", return_value=False):
+            self.assertFalse(self.app.bot_gate("day", {**sec, "run_from_hhmm": 945, "run_to_hhmm": 1530}))
+        self.assertIn("9:45 AM to 3:30 PM", self.app.bot_status["day"])
+
+    def test_goal_gate_notifies_once(self):
+        sec = {"run_from_hhmm": 0, "run_to_hhmm": 0, "daily_profit_target_usd": 25, "daily_loss_limit_usd": 0}
+        with mock.patch.object(self.app, "bot_pl", return_value={"total": 30.0}):
+            self.assertFalse(self.app.bot_gate("crypto_day", sec))
+            self.assertFalse(self.app.bot_gate("crypto_day", sec))
+        self.assertIn("Daily profit goal reached", self.app.bot_status["crypto_day"])
+        self.assertEqual(sum(n["kind"] == "goal" for n in self.store.notifications()), 1)
+        with mock.patch.object(self.app, "bot_pl", return_value={"total": 10.0}):
+            self.assertTrue(self.app.bot_gate("crypto_day", sec))
+            self.assertEqual(self.app.bot_status["crypto_day"], "")
+
+    def test_time_settings_validated(self):
+        self.assertEqual(self.req("/api/settings", {"settings": {"crypto_day": {"run_from_hhmm": 2399}}})[0], 400)
+        self.assertEqual(self.req("/api/settings", {"settings": {"crypto_day": {"run_from_hhmm": 930, "daily_profit_target_usd": 40}}})[0], 200)
+        self.assertEqual(T.load_settings()["crypto_day"]["daily_profit_target_usd"], 40)
+
+    def test_live_shows_crypto_day_target_and_bots(self):
+        self.store.x("INSERT INTO crypto_day_trades (order_id, symbol, amount, qty, entry, stop, target, stop_pct, take_pct, stop_order_id, "
+                     "status, opened, mode, day) VALUES ('o','BTC/USD',200,0.003,60000,59400,61200,1,2,'s1','open',0,'paper',?)",
+                     (F.today_et().isoformat(),))
+        d = self.req("/api/live?symbol=BTC/USD")[1]
+        self.assertIn(61200, [o["limit_price"] for o in d["orders"]])
+        btc = next(p for p in d["positions"] if p["link"] == "BTC/USD")
+        self.assertEqual(btc["target"], 61200)
+        self.assertEqual(set(d["bots"]), {"day", "crypto", "crypto_day"})
+        self.assertIn("in_hours", d["bots"]["crypto_day"])

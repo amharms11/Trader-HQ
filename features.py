@@ -20,7 +20,7 @@ import market as M
 import trader as T
 
 PROTECT_PREFIXES = ("amht-", "amhc-")   # trailing stops and crypto stop-losses placed by Trader HQ
-STRATEGIES = [("amhd-", "Day trading"), ("amhx-", "Day trading"), ("amho-", "Options"), ("amhm-", "Your own orders"),
+STRATEGIES = [("amhy-", "Crypto day trading"), ("amhd-", "Day trading"), ("amhx-", "Day trading"), ("amho-", "Options"), ("amhm-", "Your own orders"),
               ("amhr-", "Recurring buys"), ("amht-", "Trailing-stop exits"), ("amhc-", "Crypto bot"), ("amh-", "Long-term bot")]
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -56,6 +56,9 @@ class Store:
                     day INTEGER, next_run TEXT, active INTEGER, mode TEXT, created REAL, last_run TEXT, last_result TEXT);
                 CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, time REAL, title TEXT, body TEXT, kind TEXT);
                 CREATE TABLE IF NOT EXISTS summaries (day TEXT, mode TEXT, json TEXT, PRIMARY KEY (day, mode));
+                CREATE TABLE IF NOT EXISTS crypto_day_trades (id INTEGER PRIMARY KEY, order_id TEXT, symbol TEXT,
+                    amount REAL, qty REAL, entry REAL, stop REAL, target REAL, stop_pct REAL, take_pct REAL,
+                    stop_order_id TEXT, status TEXT, opened REAL, closed REAL, exit_reason TEXT, mode TEXT, day TEXT);
                 CREATE TABLE IF NOT EXISTS crypto_entries (order_id TEXT PRIMARY KEY, symbol TEXT, stop_pct REAL,
                     status TEXT, created REAL, mode TEXT);
             """)
@@ -806,3 +809,268 @@ def run_recurring(store, broker, market, settings, live_ok, today=None):
                 (nxt.isoformat(), today.isoformat(), result, r["id"]))
         results.append(result)
     return results
+
+
+# ---------- daily goals ----------
+
+def bot_pl_today(fills, strategy, prices, today=None):
+    """A bot's profit or loss today: closed trades it opened, plus open ones it opened today at current prices."""
+    today = (today or today_et()).isoformat()
+    on_day = lambda iso: dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET).date().isoformat() == today
+    trades, lots = match_trades(fills)
+    realized = sum(t["pnl"] for t in trades if t["strategy"] == strategy and on_day(t["closed"]))
+    unrealized = 0.0
+    for lot in lots:
+        price = prices.get(lot["symbol"].replace("/", ""))
+        if lot["strategy"] == strategy and price and on_day(lot["time"]):
+            unrealized += (price - lot["price"]) * lot["left"] * (100 if lot["asset_class"] == "us_option" else 1)
+    return {"realized": realized, "unrealized": unrealized, "total": realized + unrealized}
+
+
+def goal_hit(section, pl_total):
+    """'profit' or 'loss' once the bot's daily goal or loss limit is reached, else None."""
+    target, limit = M.num(section.get("daily_profit_target_usd"), 0), M.num(section.get("daily_loss_limit_usd"), 0)
+    if target > 0 and pl_total >= target:
+        return "profit"
+    if limit > 0 and pl_total <= -limit:
+        return "loss"
+    return None
+
+
+# ---------- crypto day trading ----------
+
+CRYPTO_DAY_SYSTEM = """You are the intraday crypto trade planner for a personal brokerage account. You are called
+every few minutes. You receive the account, today's open crypto day trades, and 5-minute + daily statistics for a
+fixed list of coins, plus the user's strategy and limits.
+
+Propose at most 2 actions, or none. Rules:
+- "buy": open a day trade worth amount_usd. Set stop_loss_pct and take_profit_pct; the app places the stop-loss and
+  sells at the target. Size so that amount_usd x stop_loss_pct/100 stays within max_risk_per_trade_usd, and make
+  the target at least 1.5x the stop distance.
+- "sell": close a whole open day trade in that coin (only coins in open_day_trades). Set the numbers to 0.
+- Only enter on a clear setup visible in the data; most checks should end with no trade. Never chase a move.
+- Don't open new trades shortly before the daily close-all time. Don't invent news or facts not in the data.
+- reason: 1-2 plain sentences a beginner can follow. risk: the main way this trade could lose money.
+- outlook: 1-2 sentences on the crypto session so far, honest about uncertainty."""
+
+CRYPTO_DAY_SCHEMA = json.loads(json.dumps(CRYPTO_SCHEMA))
+CRYPTO_DAY_SCHEMA["properties"]["trades"]["items"]["properties"] = {
+    "symbol": {"type": "string"}, "side": {"type": "string", "enum": ["buy", "sell"]},
+    "amount_usd": {"type": "number"}, "stop_loss_pct": {"type": "number"}, "take_profit_pct": {"type": "number"},
+    "reason": {"type": "string"}, "risk": {"type": "string"}}
+CRYPTO_DAY_SCHEMA["properties"]["trades"]["items"]["required"] = ["symbol", "side", "amount_usd", "stop_loss_pct",
+                                                                   "take_profit_pct", "reason", "risk"]
+
+
+def minutes_to(hhmm, now=None):
+    now = now or dt.datetime.now(T.ET)
+    return T.hhmm_minutes(hhmm) - (now.hour * 60 + now.minute)
+
+
+def crypto_day_rows(store, mode, statuses=("waiting_fill", "open")):
+    marks = ",".join("?" * len(statuses))
+    rows = store.q(f"SELECT id, order_id, symbol, amount, qty, entry, stop, target, stop_pct, take_pct, stop_order_id, "
+                   f"status, opened, day FROM crypto_day_trades WHERE mode=? AND status IN ({marks}) ORDER BY id",
+                   (mode, *statuses))
+    keys = ["id", "order_id", "symbol", "amount", "qty", "entry", "stop", "target", "stop_pct", "take_pct",
+            "stop_order_id", "status", "opened", "day"]
+    return [dict(zip(keys, r)) for r in rows]
+
+
+class CryptoDayPlan(T.Plan):
+    kind, label, empty_message = "crypto_day", "Crypto day trade", "No crypto day trade right now."
+
+    def __init__(self, broker, settings, market, store, progress=print, now=None):
+        super().__init__(broker, settings)
+        self.market, self.store = market, store
+        c = settings["crypto_day"]
+        now = now or dt.datetime.now(T.ET)
+        progress(f"[{now:%H:%M} ET] Checking crypto...")
+        acct = broker.account()
+        self.open = crypto_day_rows(store, self.mode)
+        held = {CryptoPlan.slash(p["symbol"]): float(p["market_value"]) for p in broker.positions() if p.get("asset_class") == "crypto"}
+        syms = sorted(set(c["watchlist"]) | {r["symbol"] for r in self.open})
+        self.quotes = market.quotes(syms)
+        stats = {}
+        for sym in syms:
+            try:
+                intraday = market.bars(sym, "1D")["bars"]
+                daily = market.bars(sym, "3M")["bars"][-20:]
+            except (RuntimeError, ValueError):
+                intraday, daily = [], []
+            stats[sym] = {"quote": self.quotes.get(sym), "last_24h_5min": T.summarize_intraday(intraday) if intraday else None,
+                          "daily_20d": T.summarize_bars(daily) if daily else None}
+        self.entries_today = self.store.q("SELECT COUNT(*) FROM crypto_day_trades WHERE mode=? AND day=?",
+                                          (self.mode, now.date().isoformat()))[0][0]
+        self.to_close_all = minutes_to(c["close_all_hhmm"], now)
+        self.acct = T.account_summary(acct)
+        self.held_value = held
+        snap = {"account": self.acct, "minutes_until_daily_close_all": self.to_close_all, "entries_today": self.entries_today,
+                "open_day_trades": [{"symbol": r["symbol"], "entry": r["entry"], "stop": r["stop"], "target": r["target"],
+                                     "status": r["status"], "price_now": (self.quotes.get(r["symbol"]) or {}).get("price")}
+                                    for r in self.open],
+                "market": stats}
+        limits = {k: c[k] for k in ("max_entries_per_day", "max_order_usd", "max_risk_per_trade_usd", "max_stop_loss_pct",
+                                    "max_take_profit_pct")}
+        plan = T.ask_claude(f"<strategy>\n{c['strategy']}\n</strategy>\n\n<watchlist>{', '.join(c['watchlist'])}</watchlist>\n\n"
+                            f"<limits>\n{json.dumps(limits)}\n</limits>\n\n<snapshot>\n{json.dumps(snap, indent=1, default=str)}\n</snapshot>\n\n"
+                            "Propose crypto day-trade actions for right now (or none).", CRYPTO_DAY_SYSTEM, CRYPTO_DAY_SCHEMA, effort="medium")
+        self.outlook = plan["outlook"]
+        self.trades = [x for x in (parse_crypto_day(t) for t in (plan.get("raw_trades") or plan["trades"])) if x]
+        T.journal("crypto_day_plan", mode=self.mode, outlook=self.outlook, trades=self.trades)
+
+    def headline(self, t, o):
+        if t["side"] == "buy":
+            return f"BUY {T.money(t['amount_usd'])} of {t['symbol']} (stop -{t['stop_loss_pct']:g}%, target +{t['take_profit_pct']:g}%)"
+        return f"SELL your {t['symbol']} day trade"
+
+    def check(self, t):
+        return check_crypto_day(t, self.settings, self.acct, self.quotes, self.open, self.entries_today, self.to_close_all, self.held_value)
+
+    def question(self, t, o):
+        if t["side"] == "buy":
+            return (f"Buy {T.money(o['amount'])} of {t['symbol']}, stop near {T.money(o['stop_price'])}, "
+                    f"target near {T.money(o['target_price'])} (max loss about {T.money(o['risk'])})?")
+        return f"Sell the {t['symbol']} day trade ({o['qty']:g}, about {T.money(o['value'])}) at market?"
+
+    def place(self, t, o, i):
+        if t["side"] == "buy":
+            order = self.b._api("/v2/orders", method="POST", body={
+                "symbol": t["symbol"], "side": "buy", "type": "market", "notional": f"{o['amount']:.2f}", "time_in_force": "gtc",
+                "client_order_id": f"amhy-{dt.datetime.now():%Y%m%d%H%M%S}-{i}"})
+            self.store.x("INSERT INTO crypto_day_trades (order_id, symbol, amount, stop_pct, take_pct, status, opened, mode, day) "
+                         "VALUES (?,?,?,?,?,?,?,?,?)", (order["id"], t["symbol"], o["amount"], t["stop_loss_pct"], t["take_profit_pct"],
+                                                         "waiting_fill", time.time(), self.mode, today_et().isoformat()))
+            self.entries_today += 1
+            self.acct["cash"] -= o["amount"]
+            return order
+        row = next(r for r in self.open if r["symbol"] == t["symbol"] and r["status"] == "open")
+        return close_crypto_day(self.b, self.store, row, "Claude closed it early")
+
+
+def parse_crypto_day(t):
+    try:
+        return {"symbol": str(t["symbol"]).upper().strip(), "side": str(t["side"]).lower(), "amount_usd": float(t.get("amount_usd") or 0),
+                "stop_loss_pct": float(t.get("stop_loss_pct") or 0), "take_profit_pct": float(t.get("take_profit_pct") or 0),
+                "reason": str(t.get("reason", "")), "risk": str(t.get("risk", "")), "qty": 0}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def check_crypto_day(t, settings, acct, quotes, open_rows, entries_today, to_close_all, held_value):
+    c = settings["crypto_day"]
+    sym, side = t["symbol"], t["side"]
+    if side not in ("buy", "sell"):
+        return False, f"unknown side '{side}'", None
+    price = (quotes.get(sym) or {}).get("price")
+    if side == "sell":
+        row = next((r for r in open_rows if r["symbol"] == sym and r["status"] == "open"), None)
+        if not row:
+            return False, f"there's no open {sym} day trade (long-term holdings aren't day traded)", None
+        return True, "", {"qty": row["qty"], "value": row["qty"] * (price or row["entry"])}
+    if sym not in c["watchlist"]:
+        return False, f"{sym} isn't on your crypto day-trading list", None
+    if not price:
+        return False, f"no current price for {sym}", None
+    if entries_today >= c["max_entries_per_day"]:
+        return False, f"daily limit of {c['max_entries_per_day']} crypto day trades reached", None
+    if to_close_all <= 30:
+        return False, f"too close to (or past) today's close-all time of {T.fmt_hhmm(c['close_all_hhmm'])} ET", None
+    amount, stop, take = t["amount_usd"], t["stop_loss_pct"], t["take_profit_pct"]
+    if not 1 <= amount <= c["max_order_usd"]:
+        return False, f"the amount must be between $1 and {T.money(c['max_order_usd'])}", None
+    if amount > acct["cash"]:
+        return False, f"only {T.money(acct['cash'])} cash is available", None
+    if not 0.3 <= stop <= c["max_stop_loss_pct"]:
+        return False, f"stop-loss must be between 0.3% and {c['max_stop_loss_pct']:g}%", None
+    if not 0.3 <= take <= c["max_take_profit_pct"]:
+        return False, f"target must be between 0.3% and {c['max_take_profit_pct']:g}%", None
+    risk = amount * stop / 100
+    if risk > c["max_risk_per_trade_usd"]:
+        return False, f"a stop-out would lose about {T.money(risk)}, over your {T.money(c['max_risk_per_trade_usd'])} limit", None
+    cap = settings["crypto"]["max_position_pct"]
+    if held_value.get(sym, 0) + amount > acct["equity"] * cap / 100:
+        return False, f"{sym} would be over {cap:g}% of the account", None
+    day_change = acct["equity"] / acct["equity_at_last_close"] - 1 if acct["equity_at_last_close"] else 0
+    if day_change <= -settings["daily_loss_stop_pct"] / 100:
+        return False, f"account is down {day_change * -100:.1f}% today; new buys are paused", None
+    return True, "", {"amount": amount, "stop_price": price * (1 - stop / 100), "target_price": price * (1 + take / 100), "risk": risk}
+
+
+def close_crypto_day(broker, store, row, reason):
+    """Cancel the trade's stop-loss and sell it at market."""
+    if row.get("stop_order_id"):
+        T.cancel_and_wait(broker, [row["stop_order_id"]])
+    order = broker._api("/v2/orders", method="POST", body={
+        "symbol": row["symbol"], "side": "sell", "type": "market", "qty": f"{row['qty']:.9g}", "time_in_force": "gtc",
+        "client_order_id": f"amhy-x-{row['id']}-{dt.datetime.now():%H%M%S}"})
+    store.x("UPDATE crypto_day_trades SET status='closed', closed=?, exit_reason=? WHERE id=?", (time.time(), reason, row["id"]))
+    return order
+
+
+def manage_crypto_day(broker, store, market, settings, notify=None, now=None):
+    """Runs every few seconds: place stop-losses once buys fill, sell at targets, and close everything at the
+    daily close-all time. No Claude involved. Returns what happened."""
+    c = settings["crypto_day"]
+    now = now or dt.datetime.now(T.ET)
+    events = []
+    rows = crypto_day_rows(store, broker.mode)
+    if not rows:
+        return events
+    open_syms = sorted({r["symbol"] for r in rows if r["status"] == "open"})
+    quotes = market.quotes(open_syms) if open_syms else {}
+    past_close_all = minutes_to(c["close_all_hhmm"], now) <= 0
+    say = notify or (lambda *a, **k: None)
+    for r in rows:
+        if r["status"] == "waiting_fill":
+            try:
+                o = broker.get_order(r["order_id"])
+            except RuntimeError:
+                continue
+            if o.get("status") in ("canceled", "expired", "rejected"):
+                store.x("UPDATE crypto_day_trades SET status='closed', closed=?, exit_reason='not filled' WHERE id=?", (time.time(), r["id"]))
+                continue
+            if o.get("status") != "filled":
+                continue
+            qty, entry = M.num(o.get("filled_qty"), 0), M.num(o.get("filled_avg_price"), 0)
+            stop, target = entry * (1 - r["stop_pct"] / 100), entry * (1 + r["take_pct"] / 100)
+            try:
+                so = broker._api("/v2/orders", method="POST", body={
+                    "symbol": r["symbol"], "side": "sell", "type": "stop_limit", "qty": f"{qty:.9g}",
+                    "stop_price": M.fmt_price(stop, True), "limit_price": M.fmt_price(stop * 0.99, True), "time_in_force": "gtc",
+                    "client_order_id": f"amhy-s-{r['id']}"})
+                sid = so.get("id")
+            except RuntimeError as e:
+                sid = None
+                say(f"No stop-loss on {r['symbol']}", f"Couldn't place the stop-loss: {e}. The app will still sell at the target or close-all time.", "error")
+            store.x("UPDATE crypto_day_trades SET status='open', qty=?, entry=?, stop=?, target=?, stop_order_id=? WHERE id=?",
+                    (qty, entry, stop, target, sid, r["id"]))
+            events.append(f"{r['symbol']} bought {qty:.6g} at {T.money(entry)}: stop {T.money(stop)}, target {T.money(target)}.")
+            continue
+        # open trade
+        if r["stop_order_id"]:
+            try:
+                so = broker.get_order(r["stop_order_id"])
+            except RuntimeError:
+                so = {}
+            if so.get("status") == "filled":
+                store.x("UPDATE crypto_day_trades SET status='closed', closed=?, exit_reason='stop-loss' WHERE id=?", (time.time(), r["id"]))
+                msg = f"{r['symbol']} stop-loss hit at about {T.money(M.num(so.get('filled_avg_price'), r['stop']))}."
+                say("Crypto day trade stopped out", msg, "trade")
+                events.append(msg)
+                continue
+        price = (quotes.get(r["symbol"]) or {}).get("price")
+        reason = None
+        if price and r["target"] and price >= r["target"]:
+            reason = "target reached"
+        elif past_close_all or (r["day"] and r["day"] < now.date().isoformat()):
+            reason = "daily close-all time"
+        if reason:
+            try:
+                close_crypto_day(broker, store, r, reason)
+                msg = f"Sold {r['symbol']} day trade ({reason}) near {T.money(price) if price else 'market'}."
+                say("Crypto day trade closed", msg, "trade")
+                events.append(msg)
+            except RuntimeError as e:
+                say(f"Couldn't sell {r['symbol']}", str(e), "error")
+    return events

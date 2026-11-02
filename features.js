@@ -54,6 +54,8 @@ function cryptoStatus() {
   const c = S.crypto, start = document.getElementById("cryptoStart"), stop = document.getElementById("cryptoStop"), text = document.getElementById("cryptoText");
   if (!start) return;
   start.hidden = c.running; stop.hidden = !c.running;
+  const cy = S.crypto_day || {};
+  document.getElementById("cdayStart").hidden = cy.running; document.getElementById("cdayStop").hidden = !cy.running;
   if (c.running) {
     const secs = c.next_check ? Math.max(0, Math.round(c.next_check - Date.now() / 1000)) : null;
     text.textContent = "Running 24/7 while Trader HQ is open. " + (secs !== null ? `Next check in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}.` : "Checking now.");
@@ -437,6 +439,8 @@ async function runBacktest(form) {
 // ---------- wiring ----------
 document.getElementById("cryptoStart").onclick = () => post("/api/crypto/start", {}, "Crypto bot started.").then(refresh).catch(() => {});
 document.getElementById("cryptoStop").onclick = () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(refresh).catch(() => {});
+document.getElementById("cdayStart").onclick = () => post("/api/crypto-day/start", {}, "Crypto day trading started.").then(refresh).catch(() => {});
+document.getElementById("cdayStop").onclick = () => post("/api/crypto-day/stop", {}, "Crypto day trading stopped.").then(refresh).catch(() => {});
 setInterval(() => { cryptoStatus(); watchNotifications(); }, 1000);
 setInterval(() => { if (MK.view === "bot") renderWatchCard(); }, 15000);
 window.addEventListener("hashchange", () => { if (MK.view === "bot") renderWatchCard(); });
@@ -455,14 +459,21 @@ FX.renderLive = function () {
           el("span", {id: "liveBusy", class: "pill"}, el("span", {class: "dot"}), el("span", {}, "Idle"))),
         el("div", {class: "live-bots"},
           el("div", {class: "live-bot"}, el("b", {}, "Day trading"), el("span", {id: "liveDayText", class: "hint", style: "margin:0"}),
+            el("div", {id: "liveCfg-day", class: "bot-cfg"}),
             el("div", {class: "row"},
               el("button", {class: "btn primary", type: "button", id: "liveDayStart", onclick: () => post("/api/day/start", {}, "Day trading started.").then(liveTick).catch(() => {})}, "Start day trading"),
               el("button", {class: "btn danger", type: "button", id: "liveDayStop", hidden: true, onclick: () => post("/api/day/stop", {}, "Day trading stopped.").then(liveTick).catch(() => {})}, "Stop day trading"),
               el("button", {class: "btn", type: "button", onclick: () => confirm("Sell everything day trading bought today, at market price, now?") && post("/api/flatten", {}, "Closing day trades.").then(liveTick).catch(() => {})}, "Close day trades now"))),
           el("div", {class: "live-bot"}, el("b", {}, "Crypto bot (24/7)"), el("span", {id: "liveCryptoText", class: "hint", style: "margin:0"}),
+            el("div", {id: "liveCfg-crypto", class: "bot-cfg"}),
             el("div", {class: "row"},
               el("button", {class: "btn primary", type: "button", id: "liveCryptoStart", onclick: () => post("/api/crypto/start", {}, "Crypto bot started.").then(liveTick).catch(() => {})}, "Start crypto bot"),
-              el("button", {class: "btn danger", type: "button", id: "liveCryptoStop", hidden: true, onclick: () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(liveTick).catch(() => {})}, "Stop crypto bot")))),
+              el("button", {class: "btn danger", type: "button", id: "liveCryptoStop", hidden: true, onclick: () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(liveTick).catch(() => {})}, "Stop crypto bot"))),
+          el("div", {class: "live-bot"}, el("b", {}, "Crypto day trading"), el("span", {id: "liveCdayText", class: "hint", style: "margin:0"}),
+            el("div", {id: "liveCfg-crypto_day", class: "bot-cfg"}),
+            el("div", {class: "row"},
+              el("button", {class: "btn primary", type: "button", id: "liveCdayStart", onclick: () => post("/api/crypto-day/start", {}, "Crypto day trading started.").then(liveTick).catch(() => {})}, "Start crypto day trading"),
+              el("button", {class: "btn danger", type: "button", id: "liveCdayStop", hidden: true, onclick: () => post("/api/crypto-day/stop", {}, "Crypto day trading stopped.").then(liveTick).catch(() => {})}, "Stop crypto day trading")))),
         el("div", {id: "autoPanelLive", style: "margin-top:12px"})),
       el("section", {class: "card", id: "livePending", hidden: true}, el("h2", {}, "Waiting for your approval"), el("div", {class: "proposals", id: "livePendingList"})),
       el("div", {class: "two"},
@@ -495,10 +506,14 @@ function liveControls() {
   document.getElementById("liveDayStart").hidden = d.running; document.getElementById("liveDayStop").hidden = !d.running;
   document.getElementById("liveCryptoStart").hidden = c.running; document.getElementById("liveCryptoStop").hidden = !c.running;
   document.getElementById("liveDayText").textContent = d.running ? `Running, ${cd(d.next_check)}. ${d.entries_today} trade(s) opened today.` : d.flattened ? "Finished for today." : "Stopped.";
-  document.getElementById("liveCryptoText").textContent = c.running ? `Running, ${cd(c.next_check)}.` : "Stopped.";
+  const bs = S.bot_status || {}, cy = S.crypto_day || {};
+  document.getElementById("liveCryptoText").textContent = c.running ? (bs.crypto || `Running, ${cd(c.next_check)}.`) : "Stopped.";
+  document.getElementById("liveCdayStart").hidden = cy.running; document.getElementById("liveCdayStop").hidden = !cy.running;
+  document.getElementById("liveCdayText").textContent = cy.running ? (bs.crypto_day || `Running, ${cd(cy.next_check)}.`) : "Stopped.";
+  if (d.running && bs.day) document.getElementById("liveDayText").textContent = bs.day + ".";
   const busy = document.getElementById("liveBusy");
-  busy.className = "pill " + (S.busy ? "open" : d.running || c.running ? "open" : "");
-  busy.lastChild.textContent = S.busy || (d.running || c.running ? "Watching the market" : "Idle");
+  busy.className = "pill " + (S.busy || d.running || c.running || cy.running ? "open" : "");
+  busy.lastChild.textContent = S.busy || (d.running || c.running || cy.running ? "Watching the market" : "Idle");
   const pending = (S.proposals || []).filter((p) => p.status === "pending");
   document.getElementById("livePending").hidden = !pending.length;
   document.getElementById("livePendingList").replaceChildren(...pending.map((p) => propCard(p, now)));
@@ -528,6 +543,7 @@ async function liveTick(first) {
       el("td", {class: "num"}, p.stop ? fmtPrice(p.stop) + ` (${pct(p.to_stop_pct)})` : "–"),
       el("td", {class: "num"}, p.target ? fmtPrice(p.target) + ` (${pct(p.to_target_pct)})` : "–")))))
     : el("div", {class: "empty"}, "No open positions."));
+  for (const key of ["day", "crypto", "crypto_day"]) botConfig(key, d.bots && d.bots[key]);
   const sc = d.score, stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
   document.getElementById("liveScore").replaceChildren(
     stat("Realized today", signed(sc.realized), tone(sc.realized)), stat("Open profit / loss", signed(sc.unrealized), tone(sc.unrealized)),
@@ -690,6 +706,39 @@ function drawCalendar() {
   const keys = Object.keys(months).sort().slice(-12).reverse();
   document.getElementById("calMonths").replaceChildren(...(keys.length ? keys.map((k) => el("button", {type: "button", class: "cal-month" + (k === ym ? " on" : ""), onclick: () => { CAL.month = k; drawCalendar(); }},
     el("span", {}, new Date(k + "-15T12:00").toLocaleDateString([], {month: "short", year: "numeric"})), el("b", {class: tone(months[k])}, signed(months[k])))) : [el("div", {class: "empty"}, "No history yet. Results appear after your first trading day.")]));
+}
+
+
+// ---------- per-bot goals and run hours (Live tab) ----------
+const toTime = (v) => { v = +v || 0; return v ? String(Math.floor(v / 100)).padStart(2, "0") + ":" + String(v % 100).padStart(2, "0") : ""; };
+const fromTime = (t) => { if (!t) return 0; const [h, m] = t.split(":").map(Number); return h * 100 + m; };
+function botConfig(key, b) {
+  const box = document.getElementById("liveCfg-" + key);
+  if (!box || !b || box.contains(document.activeElement)) return;
+  const open = box.querySelector("details") && box.querySelector("details").open;
+  const window_ = b.run_from === b.run_to ? "any time" : `${toTime(b.run_from)}–${toTime(b.run_to)} ET`;
+  const goals = [b.target > 0 ? `goal +${money0(b.target)}` : "", b.limit > 0 ? `limit −${money0(b.limit)}` : ""].filter(Boolean).join(", ") || "no daily goal";
+  const form = el("form", {class: "bot-cfg-form", onsubmit: async (e) => {
+    e.preventDefault(); const f = e.target;
+    const from = fromTime(f.from.value), to = fromTime(f.to.value);
+    try {
+      await api("/api/settings", {settings: {[key]: {daily_profit_target_usd: f.target.value || 0, daily_loss_limit_usd: f.limit.value || 0,
+        run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value}}});
+      toast("Saved. The bot uses these from its next check."); f.closest("details").open = false; liveTick();
+    } catch (err) { toast(err.message, 7000); }
+  }},
+    el("div", {class: "form-grid"},
+      el("label", {}, "Stop for the day at profit ($)", el("input", {type: "number", name: "target", min: 0, step: "any", value: b.target || "", placeholder: "off"})),
+      el("label", {}, "Stop for the day at loss ($)", el("input", {type: "number", name: "limit", min: 0, step: "any", value: b.limit || "", placeholder: "off"})),
+      el("label", {}, "Run from (New York time)", el("input", {type: "time", name: "from", value: toTime(b.run_from)})),
+      el("label", {}, "Run until", el("input", {type: "time", name: "to", value: toTime(b.run_to)})),
+      el("label", {}, "Search every (minutes)", el("input", {type: "number", name: "every", min: 5, max: 240, step: 1, value: b.every || 15}))),
+    el("p", {class: "hint", style: "margin:0"}, "Leave a goal empty for no limit, and both times empty to run any time. When a goal is hit, the bot stops searching until tomorrow; open trades keep their stop-losses and targets. Fewer searches use less of your Claude allowance."),
+    el("div", {}, el("button", {class: "btn small primary", type: "submit"}, "Save")));
+  box.replaceChildren(
+    el("div", {class: "row bot-today"}, el("span", {}, "Today: ", el("b", {class: tone(b.total)}, signed(b.total))),
+      el("span", {class: "muted"}, `· ${goals} · ${window_} · every ${b.every || "?"} min`)),
+    el("details", {open: open}, el("summary", {}, "Goals & hours"), form));
 }
 
 route();

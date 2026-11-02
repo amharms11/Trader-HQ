@@ -123,6 +123,32 @@ The **Live** tab is for watching the bot work:
 
 Bigger trades, and trades from bots you didn't tick, still wait for your Approve. All the normal limits still apply. In live mode, every trade always asks.
 
+## Crypto day trading
+Short crypto trades, like stock day trading but adjusted for crypto's 24/7 market. Start and stop it on the **Live** tab or the Bot page.
+
+**Every few minutes** (15 by default), Claude looks at 5-minute and daily price data for your crypto day-trading list (Bitcoin and Ethereum by default). It suggests a buy with a stop-loss % and a target %, a sell, or most often nothing.
+
+**Every 10 seconds** the app watches open trades, without using Claude:
+- once a buy fills, it places the stop-loss with Alpaca
+- it sells when the target is reached
+- it sells everything at the daily **close-all time** (default 11:30 PM ET), since crypto never closes
+
+**Limits:** risk per trade, trades per day, largest trade, widest stop and target, and how much of the account one coin may take. It only trades its own positions, so crypto you hold long-term is untouched. Auto-approve treats it as part of the **Crypto** checkbox.
+
+## Daily goals and run hours (each automatic bot)
+Day trading, the crypto bot and crypto day trading each have **Goals & hours** on the Live tab:
+- **Stop for the day at profit / loss:** when that bot is up (or down) this much today, it stops searching until tomorrow. Open trades keep their stop-losses and targets, and stock day trades still close before the bell.
+- **Run hours** (New York time): the bot only searches between these times. Started outside them, it waits. Overnight windows like 10 PM–6 AM work too.
+- **Search every N minutes.**
+
+The Live tab shows each bot's profit or loss today and why it's waiting, if it is.
+
+**About Claude usage and cost:** each search is one request to Claude.
+- **Signed in with your Claude subscription:** there's no extra charge, but searches count toward your plan's usage limits.
+- **Anthropic API key:** each search costs a few cents.
+
+Run hours, longer intervals and daily goals all reduce searches. Watching open trades never uses Claude.
+
 ## Calendar
 The **Calendar** tab shows every day's profit or loss on a monthly calendar:
 - ▲ green days and ▼ red days, with the dollar and % change; the color is deeper for bigger moves

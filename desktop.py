@@ -64,6 +64,8 @@ def clean_settings(posted):
                 raise ValueError(f"{path} must be a number") from None
             if num < 0 or num != num:
                 raise ValueError(f"{path} can't be negative")
+            if path.endswith("_hhmm") and (num > 2359 or num % 100 >= 60 or num != int(num)):
+                raise ValueError(f"{path} must be a time like 930 (9:30 AM) or 2330 (11:30 PM)")
             return int(num) if isinstance(default, int) and num.is_integer() else num
         if isinstance(default, list):
             items = value if isinstance(value, list) else str(value).split(",")
@@ -144,6 +146,11 @@ class App:
         self.crypto_thread = None
         self.crypto_stop = threading.Event()
         self.crypto_next = None
+        self.cday_thread = None
+        self.cday_stop = threading.Event()
+        self.cday_next = None
+        self.bot_status = {}                     # why a bot isn't searching right now (run hours, daily goal)
+        self._goal_note = set()
         self.updated_files = []                  # files changed by the update installed at startup
 
     # --- helpers ---
@@ -202,6 +209,9 @@ class App:
                 jobs.append(("protection", lambda: F.protect_positions(self.data_broker(), s["market"]["auto_trailing_stop_pct"], self.notify)))
             if self.due("crypto_protect", 30):
                 jobs.append(("crypto stop-losses", lambda: F.protect_crypto_fills(self.data_broker(), self.store, self.notify)))
+            if self.due("crypto_day", 10):
+                jobs.append(("crypto day trades", lambda: [self.log("Crypto day: " + e) for e in
+                                                         F.manage_crypto_day(self.data_broker(), self.store, self.market, s, self.notify)]))
         if self.due("summary", 300):
             jobs.append(("daily summary", self.maybe_daily_summary))
         for name, job in jobs:
@@ -226,8 +236,87 @@ class App:
         return summary
 
     def scheduler_loop(self):
-        while not self.stopping.wait(20):
+        while not self.stopping.wait(10):
             self.tick()
+
+    # --- run hours and daily goals (each automatic bot) ---
+    BOT_NAMES = {"day": "Day trading", "crypto": "Crypto bot", "crypto_day": "Crypto day trading"}
+
+    def bot_pl(self, key):
+        b = self.data_broker()
+        fills = self.cached("fills", 10, lambda: F.fetch_fills(b, max_pages=2))
+        prices = {p["symbol"].replace("/", ""): float(p.get("current_price") or 0) for p in self.cached("positions", 4, b.positions)}
+        return F.bot_pl_today(fills, self.BOT_NAMES[key], prices)
+
+    def bot_gate(self, key, sec):
+        """Whether a bot may search for trades right now. Records the reason when it may not."""
+        if not T.in_run_window(sec):
+            self.bot_status[key] = (f"Waiting for run hours ({T.fmt_hhmm(sec['run_from_hhmm'])} to "
+                                    f"{T.fmt_hhmm(sec['run_to_hhmm'])} ET)")
+            return False
+        if M.num(sec.get("daily_profit_target_usd"), 0) > 0 or M.num(sec.get("daily_loss_limit_usd"), 0) > 0:
+            try:
+                pl = self.bot_pl(key)["total"]
+            except RuntimeError:
+                pl = 0.0
+            hit = F.goal_hit(sec, pl)
+            if hit:
+                text = (f"Daily profit goal reached ({T.money(pl)})" if hit == "profit"
+                        else f"Daily loss limit reached ({T.money(pl)})") + ": done searching for today"
+                mark = (key, F.today_et().isoformat())
+                if mark not in self._goal_note:
+                    self._goal_note.add(mark)
+                    self.notify(self.BOT_NAMES[key], text + ". Open trades keep their stop-losses and targets.", "goal")
+                self.bot_status[key] = text
+                return False
+        self.bot_status[key] = ""
+        return True
+
+    # --- crypto day trading loop ---
+    def start_crypto_day(self):
+        if self.cday_thread and self.cday_thread.is_alive():
+            raise ValueError("Crypto day trading is already running.")
+        b = self.broker()
+        if not T.claude_backend():
+            raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
+        self.cday_stop.clear()
+        self.cday_thread = threading.Thread(target=self._crypto_day_loop, args=(b,), daemon=True)
+        self.cday_thread.start()
+        self.log("Crypto day trading started.")
+
+    def _crypto_day_loop(self, b):
+        progress = self.set_busy("Crypto day trading")
+        try:
+            while not self.cday_stop.is_set() and not self.stopping.is_set():
+                s = self.settings()
+                sec = s["crypto_day"]
+                if F.minutes_to(sec["close_all_hhmm"]) <= 30:
+                    self.bot_status["crypto_day"] = (f"Done for today: trades close at {T.fmt_hhmm(sec['close_all_hhmm'])} ET. "
+                                                     "Resumes after midnight ET.")
+                    self.cday_next = None
+                    self.cday_stop.wait(60)
+                    continue
+                if not self.bot_gate("crypto_day", sec):
+                    self.cday_next = None
+                    self.cday_stop.wait(60)
+                    continue
+                try:
+                    self.add_plan(F.CryptoDayPlan(b, s, self.market, self.store, progress=progress), DAY_TTL)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"Crypto day trading: check skipped: {e}")
+                finally:
+                    self.busy = ""
+                self.forget()
+                wait = max(5, sec["check_every_min"]) * 60
+                self.cday_next = time.time() + wait
+                self.cday_stop.wait(wait)
+        finally:
+            self.cday_next = None
+
+    def stop_crypto_day(self):
+        self.cday_stop.set()
+        self.log("Crypto day trading stopped searching. Open crypto day trades keep their stop-losses and targets "
+                 "and still close at the daily close-all time while Trader HQ is open.")
 
     # --- crypto bot loop (24/7 while the app is open) ---
     def start_crypto(self):
@@ -245,13 +334,17 @@ class App:
         progress = self.set_busy("Crypto")
         try:
             while not self.crypto_stop.is_set() and not self.stopping.is_set():
+                if not self.bot_gate("crypto", self.settings()["crypto"]):
+                    self.crypto_next = None
+                    self.crypto_stop.wait(60)
+                    continue
                 try:
                     self.add_plan(F.CryptoPlan(b, s, self.market, self.store, progress=progress), DAY_TTL)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"Crypto: check skipped: {e}")
                 finally:
                     self.busy = ""
-                wait = max(5, s["crypto"]["check_every_min"]) * 60
+                wait = max(5, self.settings()["crypto"]["check_every_min"]) * 60
                 self.crypto_next = time.time() + wait
                 self.crypto_stop.wait(wait)
         finally:
@@ -325,6 +418,8 @@ class App:
             stops = [M.num(o.get("stop_price")) for o in exits if o.get("type") in ("stop", "stop_limit", "trailing_stop")]
             targets = [M.num(o.get("limit_price")) for o in exits if o.get("type") == "limit"]
             price = row["current_price"]
+            cday = [r for r in F.crypto_day_rows(self.store, b.mode, ("open",)) if norm(r["symbol"]) == norm(p["symbol"])]
+            targets += [r["target"] for r in cday]  # crypto day targets are watched by the app, not sent as orders
             row["stop"] = max([x for x in stops if x], default=None)
             row["target"] = min([x for x in targets if x], default=None)
             row["to_stop_pct"] = (row["stop"] / price - 1) * 100 if row["stop"] and price else None
@@ -341,11 +436,29 @@ class App:
             "fills": [f for f in today_fills if norm(f["symbol"]) == norm(sym)],
             "orders": [{"type": o.get("type"), "side": o.get("side"), "qty": o.get("qty"), "stop_price": M.num(o.get("stop_price")),
                         "limit_price": M.num(o.get("limit_price")), "status": o.get("status")}
-                       for o in orders if norm(o.get("symbol")) == norm(sym)],
+                       for o in orders if norm(o.get("symbol")) == norm(sym)]
+                      + [{"type": "limit", "side": "sell", "qty": r["qty"], "stop_price": None, "limit_price": r["target"], "status": "watched"}
+                         for r in F.crypto_day_rows(self.store, b.mode, ("open",)) if norm(r["symbol"]) == norm(sym) and r["target"]],
+            "bots": self._bots_today(),
             "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
                       "losses": sum(1 for t in closed if t["pnl"] < 0), "realized": sum(t["pnl"] for t in closed),
                       "unrealized": sum(r["unrealized_pl"] for r in rows), "fills": len(today_fills)},
         }
+
+    def _bots_today(self):
+        out = {}
+        s = self.settings()
+        for key in self.BOT_NAMES:
+            sec = s[key]
+            try:
+                pl = self.bot_pl(key)
+            except RuntimeError:
+                pl = {"realized": 0, "unrealized": 0, "total": 0}
+            out[key] = {**pl, "status": self.bot_status.get(key, ""), "in_hours": T.in_run_window(sec),
+                        "target": sec.get("daily_profit_target_usd", 0), "limit": sec.get("daily_loss_limit_usd", 0),
+                        "run_from": sec.get("run_from_hhmm", 0), "run_to": sec.get("run_to_hhmm", 0),
+                        "every": sec.get("check_every_min")}
+        return out
 
     def data_broker(self):
         """For reading prices and company data. Reading moves no money, so live mode doesn't need LIVE typed."""
@@ -474,6 +587,8 @@ class App:
             "plans": self.plans[:8], "proposals": [self.public(p) for p in self.proposals[:40]],
             "activity": self.activity[:60], "day": self.day_info(), "error": None,
             "notifications": self.store.notifications(15) if T.DATA.exists() else [],
+            "crypto_day": {"running": bool(self.cday_thread and self.cday_thread.is_alive()), "next_check": self.cday_next},
+            "bot_status": self.bot_status,
             "crypto": {"running": bool(self.crypto_thread and self.crypto_thread.is_alive()),
                        "next_check": self.crypto_next},
             "update": {**self.update_info, "just_updated": len(self.updated_files),
@@ -686,6 +801,17 @@ class App:
         progress = self.set_busy("Day trading")
         try:
             while not self.day_stop.is_set() and not self.stopping.is_set():
+                sec = self.settings()["day"]
+                if not self.bot_gate("day", sec):
+                    try:  # still close day trades before the bell, even while not searching
+                        clock = b.clock()
+                        near_close = not clock["is_open"] or T.minutes_until_close(clock) <= sec["flatten_min_before_close"]
+                    except RuntimeError:
+                        near_close = False
+                    if not near_close:
+                        self.day_next = None
+                        self.day_stop.wait(60)
+                        continue
                 try:
                     plan, wait, done = T.day_tick(b, s, state, progress=progress)
                 except Exception as e:
@@ -944,6 +1070,10 @@ def make_handler(app, shutdown, restart=lambda: None):
                     return self._send(200, F.explain(app.market, info, held))
                 elif path == "/api/crypto/start":
                     app.start_crypto()
+                elif path == "/api/crypto-day/start":
+                    app.start_crypto_day()
+                elif path == "/api/crypto-day/stop":
+                    app.stop_crypto_day()
                 elif path == "/api/crypto/stop":
                     app.stop_crypto()
                 elif path == "/api/market/scan":
@@ -965,7 +1095,8 @@ def make_handler(app, shutdown, restart=lambda: None):
                 elif path == "/api/cancel-order":
                     app.cancel_order(str(body.get("id", "")))
                 elif path == "/api/restart":
-                    if app.day_info()["running"] or (app.crypto_thread and app.crypto_thread.is_alive()):
+                    if app.day_info()["running"] or (app.crypto_thread and app.crypto_thread.is_alive()) or \
+                            (app.cday_thread and app.cday_thread.is_alive()):
                         raise ValueError("Stop day trading and the crypto bot first, then restart.")
                     app.stopping.set()
                     self._send(200, {"ok": True})
