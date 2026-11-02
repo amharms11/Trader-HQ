@@ -137,7 +137,7 @@ Short crypto trades, like stock day trading but adjusted for crypto's 24/7 marke
 
 ## Daily goals and run hours (each automatic bot)
 Day trading, the crypto bot and crypto day trading each have **Goals & hours** on the Live tab:
-- **Shut off at profit / loss (% of portfolio):** for example +1% or −0.5% of your portfolio's value at the start of the day, counting that bot's trades today. When either is reached, the bot **shuts itself off for the day**, so it sends no more requests to Claude. Open trades keep their stop-losses and targets, and stock day trades still close before the bell. Start it again tomorrow.
+- **Shut off at profit / loss (% of portfolio):** for example +1% or −0.5% of your portfolio's value at the start of the day, counting that bot's trades today. When either is reached, the bot **shuts itself off for the day**: no new trades, and no more requests to Claude. **Trades already open still finish:** each ends at its target or stop-loss, or is sold at the end of the day (before the bell for stock day trades, at the close-all time for crypto). Nothing is left sitting open. Start the bot again tomorrow.
 - **Run hours** (New York time): the bot only searches between these times. Started outside them, it waits. Overnight windows like 10 PM–6 AM work too.
 - **Search every N minutes.**
 
@@ -163,7 +163,7 @@ It uses your account's daily value, so it includes open positions as well as clo
 - **Price alerts** (Tools page or any symbol page): for example "AAPL below $180" or "BTC moves 5% today". Checked every 20 seconds while Trader HQ is open, with a Mac notification.
 - **Recurring buys** (dollar-cost averaging): a fixed dollar amount every week, every two weeks or monthly. Fractional shares are used where allowed. They stay within your cash and your *Largest buy you place yourself* limit. In live mode they only run after you've typed LIVE that session.
 - **Automatic trailing stops** (Tools): every stock you own gets a trailing stop, for example 8% below its highest price. Positions that already have a bracket or OCO are left alone. Selling yourself or with the bot removes the stop first.
-- **Crypto bot** (Bot page): Claude suggests small crypto buys and sells, on demand or 24/7 while Trader HQ is open, within its own limits (Settings → Crypto bot). Because Alpaca crypto has no bracket orders, each buy gets a stop-loss placed right after it fills.
+- **Crypto bot** (Bot page): Claude suggests small crypto buys and sells, on demand or 24/7 while Trader HQ is open, within its own limits (Settings → Crypto bot). Every buy gets a stop-loss and a target. Alpaca crypto has no bracket orders, so the stop-loss is placed right after the buy fills, and the app sells when the target is reached.
 - **Ask Claude about this stock:** a plain-English explanation on every symbol page covering what it is, how it's been doing, what the numbers mean and the main risks. It explains only. It never places trades or tells you to buy or sell.
 - **Compare charts:** type up to 3 other symbols under any chart to see their % change on one chart.
 - **Earnings and dividends:** upcoming dividends from Alpaca, and earnings dates with a free Finnhub key. Buy suggestions from the bot warn you when earnings are within a week. Tools has a calendar for everything you own or watch.

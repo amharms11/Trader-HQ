@@ -125,6 +125,7 @@ DEFAULT_SETTINGS = {
         "max_order_usd": 200,
         "max_position_pct": 10,             # no coin above this % of the account
         "max_stop_loss_pct": 8,             # widest stop-loss allowed on a crypto buy
+        "max_take_profit_pct": 15,          # furthest target allowed on a crypto buy
         "daily_profit_target_pct": 0,      # >0: shut this bot off for the day once it's up this % of the portfolio
         "daily_loss_limit_pct": 0,         # >0: shut this bot off for the day once it's down this % of the portfolio
         "run_from_hhmm": 0,                # run hours in New York time, e.g. 945 to 1530; 0 and 0 = any time

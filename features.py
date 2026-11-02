@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -62,6 +63,11 @@ class Store:
                 CREATE TABLE IF NOT EXISTS crypto_entries (order_id TEXT PRIMARY KEY, symbol TEXT, stop_pct REAL,
                     status TEXT, created REAL, mode TEXT);
             """)
+            for col in ("take_pct REAL", "qty REAL", "target REAL", "stop_order_id TEXT", "finish_by TEXT"):
+                try:  # columns added after the first version
+                    db.conn.execute(f"ALTER TABLE crypto_entries ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
             db.conn.commit()
 
     def q(self, sql, args=()):
@@ -578,9 +584,10 @@ very volatile. You receive the account, crypto holdings, recent hourly and daily
 list of coins, plus the user's strategy and limits.
 
 Propose at most 2 actions, or none. Rules:
-- "buy": spend amount_usd on a coin from the watchlist. Set stop_loss_pct: a protective stop is placed that far
-  below the fill price. Set sell_fraction to 0.
-- "sell": sell sell_fraction (0.1-1.0) of a coin that is held. Set amount_usd and stop_loss_pct to 0.
+- "buy": spend amount_usd on a coin from the watchlist. Set stop_loss_pct (a protective stop is placed that far
+  below the fill price) and take_profit_pct (the app sells there); make the target at least 1.5x the stop
+  distance. Set sell_fraction to 0.
+- "sell": sell sell_fraction (0.1-1.0) of a coin that is held. Set amount_usd, stop_loss_pct and take_profit_pct to 0.
 - Only act on a clear reason in the data; most checks should end with no trade. Never chase a big move.
 - Don't invent news or facts not in the data. Respect the limits; orders that break them are rejected.
 - reason: 1-2 plain sentences for a beginner. risk: the main way this loses money.
@@ -595,9 +602,10 @@ CRYPTO_SCHEMA = {
             "properties": {
                 "symbol": {"type": "string"}, "side": {"type": "string", "enum": ["buy", "sell"]},
                 "amount_usd": {"type": "number"}, "sell_fraction": {"type": "number"},
-                "stop_loss_pct": {"type": "number"}, "reason": {"type": "string"}, "risk": {"type": "string"},
+                "stop_loss_pct": {"type": "number"}, "take_profit_pct": {"type": "number"},
+                "reason": {"type": "string"}, "risk": {"type": "string"},
             },
-            "required": ["symbol", "side", "amount_usd", "sell_fraction", "stop_loss_pct", "reason", "risk"],
+            "required": ["symbol", "side", "amount_usd", "sell_fraction", "stop_loss_pct", "take_profit_pct", "reason", "risk"],
             "additionalProperties": False,
         }},
     },
@@ -634,7 +642,7 @@ class CryptoPlan(T.Plan):
         self.quotes = quotes
         self.held = {self.slash(s): float(p["qty"]) for s, p in held.items()}
         self.held_value = {self.slash(s): float(p["market_value"]) for s, p in held.items()}
-        limits = {k: c[k] for k in ("max_order_usd", "max_position_pct", "max_stop_loss_pct")}
+        limits = {k: c[k] for k in ("max_order_usd", "max_position_pct", "max_stop_loss_pct", "max_take_profit_pct")}
         limits["daily_loss_stop_pct"] = settings["daily_loss_stop_pct"]
         progress("Asking Claude about crypto (this can take a minute)...")
         plan = T.ask_claude(f"<strategy>\n{c['strategy']}\n</strategy>\n\n<watchlist>{', '.join(c['watchlist'])}</watchlist>\n\n"
@@ -651,7 +659,7 @@ class CryptoPlan(T.Plan):
 
     def headline(self, t, o):
         if t["side"] == "buy":
-            return f"BUY {T.money(t['amount_usd'])} of {t['symbol']} (stop-loss -{t['stop_loss_pct']:g}%)"
+            return f"BUY {T.money(t['amount_usd'])} of {t['symbol']} (stop -{t['stop_loss_pct']:g}%, target +{t['take_profit_pct']:g}%)"
         return f"SELL {t['sell_fraction'] * 100:.0f}% of your {t['symbol']}"
 
     def check(self, t):
@@ -659,7 +667,8 @@ class CryptoPlan(T.Plan):
 
     def question(self, t, o):
         if t["side"] == "buy":
-            return f"Buy {T.money(o['amount'])} of {t['symbol']} at market, then place a stop-loss near {T.money(o['stop_price'])}?"
+            return (f"Buy {T.money(o['amount'])} of {t['symbol']} at market, with a stop-loss near {T.money(o['stop_price'])} "
+                    f"and a target near {T.money(o['target_price'])}?")
         return f"Sell {o['qty']:g} {t['symbol']} (about {T.money(o['value'])}) at market?"
 
     def place(self, t, o, i):
@@ -669,8 +678,9 @@ class CryptoPlan(T.Plan):
             order = b._api("/v2/orders", method="POST", body={"symbol": t["symbol"], "side": "buy", "type": "market",
                                                              "notional": f"{o['amount']:.2f}", "time_in_force": "gtc",
                                                              "client_order_id": cid})
-            self.store.x("INSERT OR REPLACE INTO crypto_entries VALUES (?,?,?,?,?,?)",
-                         (order["id"], t["symbol"], t["stop_loss_pct"], "waiting_fill", time.time(), self.mode))
+            self.store.x("INSERT OR REPLACE INTO crypto_entries (order_id, symbol, stop_pct, take_pct, status, created, mode) "
+                         "VALUES (?,?,?,?,?,?,?)", (order["id"], t["symbol"], t["stop_loss_pct"], t["take_profit_pct"],
+                                                   "waiting_fill", time.time(), self.mode))
             self.snap["account"]["cash"] -= o["amount"]
             self.held_value[t["symbol"]] = self.held_value.get(t["symbol"], 0) + o["amount"]
         else:
@@ -678,6 +688,9 @@ class CryptoPlan(T.Plan):
             order = b._api("/v2/orders", method="POST", body={"symbol": t["symbol"], "side": "sell", "type": "market",
                                                              "qty": f"{o['qty']:.9g}", "time_in_force": "gtc",
                                                              "client_order_id": cid})
+            if t["sell_fraction"] >= 0.999:  # sold it all: nothing left for the watcher to manage
+                self.store.x("UPDATE crypto_entries SET status='closed' WHERE symbol=? AND mode=? AND status IN "
+                             "('waiting_fill','protected','unprotected')", (t["symbol"], self.mode))
             self.held[t["symbol"]] = self.held.get(t["symbol"], 0) - o["qty"]
         return order
 
@@ -686,8 +699,8 @@ def parse_crypto_trade(t):
     try:
         return {"symbol": str(t["symbol"]).upper().strip(), "side": str(t["side"]).lower(),
                 "amount_usd": float(t.get("amount_usd") or 0), "sell_fraction": float(t.get("sell_fraction") or 0),
-                "stop_loss_pct": float(t.get("stop_loss_pct") or 0), "reason": str(t.get("reason", "")),
-                "risk": str(t.get("risk", "")), "qty": 0}
+                "stop_loss_pct": float(t.get("stop_loss_pct") or 0), "take_profit_pct": float(t.get("take_profit_pct") or 0),
+                "reason": str(t.get("reason", "")), "risk": str(t.get("risk", "")), "qty": 0}
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -718,19 +731,23 @@ def check_crypto_trade(t, settings, acct, quotes, held, held_value):
         return False, f"only {T.money(acct['cash'])} cash is available", None
     if not 0.5 <= t["stop_loss_pct"] <= c["max_stop_loss_pct"]:
         return False, f"the stop-loss must be between 0.5% and {c['max_stop_loss_pct']:g}%", None
+    if not 0.5 <= t["take_profit_pct"] <= c["max_take_profit_pct"]:
+        return False, f"the target must be between 0.5% and {c['max_take_profit_pct']:g}%", None
     if (held_value.get(sym, 0) + amount) > acct["equity"] * c["max_position_pct"] / 100:
         return False, f"{sym} would be over {c['max_position_pct']:g}% of the account", None
     day_change = acct["equity"] / acct["equity_at_last_close"] - 1 if acct["equity_at_last_close"] else 0
     if day_change <= -settings["daily_loss_stop_pct"] / 100:
         return False, f"account is down {day_change * -100:.1f}% today; new buys are paused", None
-    return True, "", {"amount": amount, "stop_price": price * (1 - t["stop_loss_pct"] / 100)}
+    return True, "", {"amount": amount, "stop_price": price * (1 - t["stop_loss_pct"] / 100),
+                      "target_price": price * (1 + t["take_profit_pct"] / 100)}
 
 
 def protect_crypto_fills(broker, store, notify=None):
-    """Once a crypto-bot buy fills, place its stop-loss (Alpaca crypto has no brackets, so it's done afterwards)."""
+    """Once a crypto-bot buy fills, place its stop-loss (Alpaca crypto has no brackets, so it's done afterwards)
+    and remember its target, which the app watches."""
     placed = []
-    for oid, sym, pct, status in store.q("SELECT order_id, symbol, stop_pct, status FROM crypto_entries "
-                                         "WHERE status='waiting_fill' AND mode=?", (broker.mode,)):
+    for oid, sym, pct, take in store.q("SELECT order_id, symbol, stop_pct, take_pct FROM crypto_entries "
+                                       "WHERE status='waiting_fill' AND mode=?", (broker.mode,)):
         try:
             o = broker.get_order(oid)
         except RuntimeError:
@@ -742,18 +759,72 @@ def protect_crypto_fills(broker, store, notify=None):
             continue
         qty, avg = M.num(o.get("filled_qty"), 0), M.num(o.get("filled_avg_price"), 0)
         stop = avg * (1 - pct / 100)
+        target = avg * (1 + take / 100) if take else None
         try:
-            broker._api("/v2/orders", method="POST", body={
+            so = broker._api("/v2/orders", method="POST", body={
                 "symbol": sym, "side": "sell", "type": "stop_limit", "qty": f"{qty:.9g}",
                 "stop_price": M.fmt_price(stop, True), "limit_price": M.fmt_price(stop * 0.99, True),
                 "time_in_force": "gtc", "client_order_id": f"amhc-s-{oid[:30]}"})
-            store.x("UPDATE crypto_entries SET status='protected' WHERE order_id=?", (oid,))
+            store.x("UPDATE crypto_entries SET status='protected', qty=?, target=?, stop_order_id=? WHERE order_id=?",
+                    (qty, target, so.get("id"), oid))
             placed.append(sym)
         except RuntimeError as e:
-            store.x("UPDATE crypto_entries SET status='unprotected' WHERE order_id=?", (oid,))
+            store.x("UPDATE crypto_entries SET status='unprotected', qty=?, target=? WHERE order_id=?", (qty, target, oid))
             if notify:
                 notify(f"No stop-loss on {sym}", f"Couldn't place the stop-loss: {e}", "error")
     return placed
+
+
+def manage_crypto_bot(broker, store, market, settings, notify=None, now=None):
+    """Runs every few seconds: sell crypto-bot trades at their target, notice stop-losses that filled, and once the
+    bot has shut off for the day, sell anything still open at the daily close-all time. No Claude involved."""
+    now = now or dt.datetime.now(T.ET)
+    rows = store.q("SELECT order_id, symbol, qty, target, stop_order_id, finish_by FROM crypto_entries "
+                   "WHERE status IN ('protected','unprotected') AND mode=?", (broker.mode,))
+    if not rows:
+        return []
+    quotes = market.quotes(sorted({r[1] for r in rows}))
+    say = notify or (lambda *a, **k: None)
+    deadline_passed = minutes_to(settings["crypto_day"]["close_all_hhmm"], now) <= 0
+    events = []
+    for oid, sym, qty, target, stop_id, finish_by in rows:
+        if stop_id:
+            try:
+                so = broker.get_order(stop_id)
+            except RuntimeError:
+                so = {}
+            if so.get("status") == "filled":
+                store.x("UPDATE crypto_entries SET status='closed' WHERE order_id=?", (oid,))
+                events.append(f"{sym} stop-loss hit.")
+                say("Crypto bot trade stopped out", f"{sym} stop-loss hit.", "trade")
+                continue
+        price = (quotes.get(sym) or {}).get("price")
+        reason = None
+        if target and price and price >= target:
+            reason = "target reached"
+        elif finish_by and (now.date().isoformat() > finish_by or (now.date().isoformat() == finish_by and deadline_passed)):
+            reason = "the bot shut off for the day; sold at the close-all time"
+        if not reason or not qty:
+            continue
+        try:
+            if stop_id:
+                T.cancel_and_wait(broker, [stop_id])
+            broker._api("/v2/orders", method="POST", body={
+                "symbol": sym, "side": "sell", "type": "market", "qty": f"{qty:.9g}", "time_in_force": "gtc",
+                "client_order_id": f"amhc-x-{oid[:30]}"})
+            msg = f"Sold {sym} ({reason}) near {T.money(price) if price else 'market'}."
+            say("Crypto bot trade closed", msg, "trade")
+            events.append(msg)
+        except RuntimeError as e:
+            say(f"Couldn't sell {sym}", f"{e}. It may already have been sold.", "error")
+        store.x("UPDATE crypto_entries SET status='closed' WHERE order_id=?", (oid,))
+    return events
+
+
+def finish_crypto_bot_today(store, mode, day=None):
+    """The crypto bot shut off: its open trades keep their stop and target, and must end by today's close-all time."""
+    store.x("UPDATE crypto_entries SET finish_by=? WHERE mode=? AND status IN ('waiting_fill','protected','unprotected')",
+            ((day or today_et()).isoformat(), mode))
 
 
 def run_recurring(store, broker, market, settings, live_ok, today=None):

@@ -207,8 +207,10 @@ class App:
                 jobs.append(("recurring", lambda: F.run_recurring(self.store, self.data_broker(), self.market, s, self.live_ok)))
             if s["market"]["auto_trailing_stop_pct"] > 0 and self.due("protect", 120):
                 jobs.append(("protection", lambda: F.protect_positions(self.data_broker(), s["market"]["auto_trailing_stop_pct"], self.notify)))
-            if self.due("crypto_protect", 30):
+            if self.due("crypto_protect", 10):
                 jobs.append(("crypto stop-losses", lambda: F.protect_crypto_fills(self.data_broker(), self.store, self.notify)))
+                jobs.append(("crypto bot trades", lambda: [self.log("Crypto bot: " + e) for e in
+                                                         F.manage_crypto_bot(self.data_broker(), self.store, self.market, s, self.notify)]))
             if self.due("crypto_day", 10):
                 jobs.append(("crypto day trades", lambda: [self.log("Crypto day: " + e) for e in
                                                          F.manage_crypto_day(self.data_broker(), self.store, self.market, s, self.notify)]))
@@ -351,8 +353,10 @@ class App:
             while not self.crypto_stop.is_set() and not self.stopping.is_set():
                 gate = self.bot_gate("crypto", self.settings()["crypto"])
                 if gate == "goal":
-                    self.log("Crypto bot: " + self.bot_status["crypto"] + ".")
-                    break  # shut off; stop-losses already placed stay with Alpaca
+                    F.finish_crypto_bot_today(self.store, b.mode)
+                    self.log("Crypto bot: " + self.bot_status["crypto"] + ". Its open trades finish at their target or "
+                             f"stop-loss, or are sold at {T.fmt_hhmm(self.settings()['crypto_day']['close_all_hhmm'])} ET.")
+                    break  # shut off: no new trades
                 if gate == "wait":
                     self.crypto_next = None
                     self.crypto_stop.wait(60)
@@ -438,7 +442,10 @@ class App:
             targets = [M.num(o.get("limit_price")) for o in exits if o.get("type") == "limit"]
             price = row["current_price"]
             cday = [r for r in F.crypto_day_rows(self.store, b.mode, ("open",)) if norm(r["symbol"]) == norm(p["symbol"])]
-            targets += [r["target"] for r in cday]  # crypto day targets are watched by the app, not sent as orders
+            targets += [r["target"] for r in cday]  # crypto targets are watched by the app, not sent as orders
+            targets += [tg for sy, tg in self.store.q("SELECT symbol, target FROM crypto_entries WHERE mode=? AND "
+                                                       "status IN ('protected','unprotected') AND target IS NOT NULL", (b.mode,))
+                        if norm(sy) == norm(p["symbol"])]
             row["stop"] = max([x for x in stops if x], default=None)
             row["target"] = min([x for x in targets if x], default=None)
             row["to_stop_pct"] = (row["stop"] / price - 1) * 100 if row["stop"] and price else None
@@ -457,7 +464,11 @@ class App:
                         "limit_price": M.num(o.get("limit_price")), "status": o.get("status")}
                        for o in orders if norm(o.get("symbol")) == norm(sym)]
                       + [{"type": "limit", "side": "sell", "qty": r["qty"], "stop_price": None, "limit_price": r["target"], "status": "watched"}
-                         for r in F.crypto_day_rows(self.store, b.mode, ("open",)) if norm(r["symbol"]) == norm(sym) and r["target"]],
+                         for r in F.crypto_day_rows(self.store, b.mode, ("open",)) if norm(r["symbol"]) == norm(sym) and r["target"]]
+                      + [{"type": "limit", "side": "sell", "qty": q, "stop_price": None, "limit_price": tg, "status": "watched"}
+                         for sy, q, tg in self.store.q("SELECT symbol, qty, target FROM crypto_entries WHERE mode=? AND "
+                                                       "status IN ('protected','unprotected') AND target IS NOT NULL", (b.mode,))
+                         if norm(sy) == norm(sym)],
             "bots": self._bots_today(),
             "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
                       "losses": sum(1 for t in closed if t["pnl"] < 0), "realized": sum(t["pnl"] for t in closed),

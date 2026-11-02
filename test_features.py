@@ -333,7 +333,8 @@ class CryptoTests(Base):
             return F.CryptoPlan(self.b, T.load_settings(), self.mk, self.store, progress=lambda *_: None)
 
     def trade(self, **kw):
-        return {"symbol": "BTC/USD", "side": "buy", "amount_usd": 100, "sell_fraction": 0, "stop_loss_pct": 5, "reason": "r", "risk": "k", **kw}
+        return {"symbol": "BTC/USD", "side": "buy", "amount_usd": 100, "sell_fraction": 0, "stop_loss_pct": 5, "take_profit_pct": 10,
+                "reason": "r", "risk": "k", **kw}
 
     def test_buy_then_stop_after_fill(self):
         p = self.plan([self.trade()])
@@ -348,10 +349,41 @@ class CryptoTests(Base):
         self.assertEqual((stop["type"], stop["side"], stop["qty"]), ("stop_limit", "sell", "0.004"))
         self.assertAlmostEqual(float(stop["stop_price"]), 57000)
         self.assertEqual(F.protect_crypto_fills(self.b, self.store), [])  # only once
+        self.assertEqual(self.store.q("SELECT target FROM crypto_entries WHERE order_id='buy1'")[0][0], 66000)
+
+    def protected(self, target=66000, finish_by=None):
+        self.store.x("INSERT INTO crypto_entries (order_id, symbol, stop_pct, take_pct, status, created, mode, qty, target, "
+                     "stop_order_id, finish_by) VALUES ('e1','BTC/USD',5,10,'protected',0,'paper',0.004,?, 'st1', ?)", (target, finish_by))
+
+    def test_target_sells(self):
+        self.protected(target=59000)  # price $60,000 is past the target
+        self.b.get_order = lambda oid: {"status": "new"}
+        ev = F.manage_crypto_bot(self.b, self.store, self.mk, T.load_settings(), now=ET_NOON)
+        self.assertIn("target reached", ev[0])
+        self.assertEqual(self.b.cancelled, ["st1"])
+        self.assertEqual((self.b.orders[-1]["side"], self.b.orders[-1]["qty"]), ("sell", "0.004"))
+        self.assertEqual(F.manage_crypto_bot(self.b, self.store, self.mk, T.load_settings(), now=ET_NOON), [])
+
+    def test_shut_off_trades_finish_by_close_all(self):
+        self.protected()
+        self.b.get_order = lambda oid: {"status": "new"}
+        s = T.load_settings()
+        self.assertEqual(F.manage_crypto_bot(self.b, self.store, self.mk, s, now=ET_NOON), [])  # no deadline: keeps running
+        F.finish_crypto_bot_today(self.store, "paper", day=ET_NOON.date())
+        self.assertEqual(F.manage_crypto_bot(self.b, self.store, self.mk, s, now=ET_NOON), [])  # finishes later today
+        ev = F.manage_crypto_bot(self.b, self.store, self.mk, s, now=ET_NOON.replace(hour=23, minute=30))
+        self.assertIn("shut off for the day", ev[0])
+
+    def test_stop_filled_closes(self):
+        self.protected()
+        self.b.get_order = lambda oid: {"status": "filled"}
+        self.assertIn("stop-loss hit", F.manage_crypto_bot(self.b, self.store, self.mk, T.load_settings(), now=ET_NOON)[0])
+        self.assertEqual(self.b.orders, [])
 
     def test_checks(self):
         p = self.plan([])
         for bad, word in ((self.trade(symbol="DOGE/USD"), "watchlist"), (self.trade(amount_usd=500), "limit"),
+                          (self.trade(take_profit_pct=0), "target"), (self.trade(take_profit_pct=40), "target"),
                           (self.trade(stop_loss_pct=20), "stop-loss"), (self.trade(amount_usd=200, symbol="ETH/USD"), "")):
             ok, why, _ = p.check(F.parse_crypto_trade(bad))
             if word:
@@ -681,6 +713,7 @@ class GateTests(Base):
             self.app.crypto_thread.join(5)
         self.assertFalse(self.app.cday_thread.is_alive())
         self.assertFalse(self.app.crypto_thread.is_alive())
+        self.assertEqual(self.store.q("SELECT finish_by FROM crypto_entries"), [])  # nothing open: nothing to finish
         self.assertTrue(self.app.bot_status["crypto_day"].startswith("Shut off for today"))
         self.assertFalse(self.req("/api/state")[1]["crypto_day"]["running"])
 

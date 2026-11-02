@@ -736,7 +736,7 @@ function botConfig(key, b) {
       el("label", {}, "Run from (New York time)", el("input", {type: "time", name: "from", value: toTime(b.run_from)})),
       el("label", {}, "Run until", el("input", {type: "time", name: "to", value: toTime(b.run_to)})),
       el("label", {}, "Search every (minutes)", el("input", {type: "number", name: "every", min: 5, max: 240, step: 1, value: b.every || 15}))),
-    el("p", {class: "hint", style: "margin:0"}, "Percent of your portfolio's value at the start of the day, counting this bot's trades today. When either is reached the bot shuts itself off for the day, so it stops using Claude; open trades keep their stop-losses and targets. Leave empty for no limit, and both times empty to run any time."),
+    el("p", {class: "hint", style: "margin:0"}, "Percent of your portfolio's value at the start of the day, counting this bot's trades today. When either is reached the bot shuts itself off for the day: no new trades and no more Claude use, while trades already open still finish at their target or stop-loss, or are sold at the end of the day. Leave empty for no limit, and both times empty to run any time."),
     el("div", {}, el("button", {class: "btn small primary", type: "submit"}, "Save")));
   setTimeout(() => { equiv(form.target, tOut); equiv(form.limit, lOut); }, 0);
   box.replaceChildren(
