@@ -104,6 +104,18 @@ DEFAULT_SETTINGS = {
         "max_manual_order_usd": 1000,       # largest buy you can place yourself from the order ticket
         "confirm_manual_orders": True,      # show a review step before sending (always on in live mode)
         "sec_contact_email": "",            # optional: SEC asks data users for a contact email
+        "auto_trailing_stop_pct": 0,        # >0: give every stock position a trailing stop this % below its high
+        "mac_notifications": True,          # show alerts and summaries as Mac notifications
+    },
+    "crypto": {
+        # The Claude crypto bot (24/7). Crypto is very volatile: keep these small.
+        "watchlist": ["BTC/USD", "ETH/USD", "SOL/USD"],
+        "strategy": ("Cautious crypto trading. Buy small amounts only after a clear pullback within an uptrend; "
+                     "take partial profits after strong runs. Doing nothing is usually right."),
+        "check_every_min": 30,
+        "max_order_usd": 200,
+        "max_position_pct": 10,             # no coin above this % of the account
+        "max_stop_loss_pct": 8,             # widest stop-loss allowed on a crypto buy
     },
 }
 
@@ -127,11 +139,11 @@ def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         saved = json.loads(SETTINGS_FILE.read_text())
-        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market")}
+        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto")}
         s.update(saved)
         for k, v in sections.items():
             s[k].update(v)
-    for section in (s, s["day"], s["options"]):
+    for section in (s, s["day"], s["options"], s["crypto"]):
         section["watchlist"] = [str(x).upper().strip() for x in section["watchlist"] if str(x).strip()]
     if s["market"]["data_feed"] not in ("iex", "sip"):
         s["market"]["data_feed"] = "iex"
@@ -275,7 +287,7 @@ class Broker:
         return self._api("/v2/positions")
 
     def stock_positions(self):
-        return [p for p in self.positions() if not is_option(p)]
+        return [p for p in self.positions() if p.get("asset_class", "us_equity") == "us_equity"]
 
     def option_positions(self):
         return [p for p in self.positions() if is_option(p)]
@@ -402,7 +414,7 @@ def summarize_intraday(bars):
     if not bars:
         return None
     vol = sum(b["v"] for b in bars)
-    vwap = sum(b.get("vw", b["c"]) * b["v"] for b in bars) / vol if vol else bars[-1]["c"]
+    vwap = sum((b.get("vw") or b["c"]) * b["v"] for b in bars) / vol if vol else bars[-1]["c"]
     first, last = bars[0]["o"], bars[-1]["c"]
     avg_bar_vol = vol / len(bars)
     return {
@@ -638,6 +650,49 @@ def _ask_cli(prompt, system, schema):
     return validate_plan_shape(plan) if isinstance(plan, dict) else parse_plan(res.get("result") or "")
 
 
+def ask_text(prompt, system, effort="medium"):
+    """A plain-text answer from Claude (used to explain a stock; never to place trades)."""
+    backend = claude_backend()
+    if backend == "api":
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        try:
+            resp = client.beta.messages.create(
+                model=CLAUDE_MODEL, max_tokens=16000, system=system,
+                messages=[{"role": "user", "content": prompt}],
+                betas=["server-side-fallback-2026-07-01"],
+                extra_body={"fallbacks": "default", "output_config": {"effort": effort}},
+            )
+        except anthropic.AuthenticationError:
+            raise RuntimeError("Your Anthropic API key wasn't accepted.")
+        except anthropic.RateLimitError:
+            raise RuntimeError("Claude is busy right now (rate limit). Try again in a minute.")
+        except anthropic.APIStatusError as e:
+            raise RuntimeError(f"Claude returned an error ({e.status_code}). Try again shortly.")
+        except anthropic.APIConnectionError:
+            raise RuntimeError("Couldn't reach Claude. Check your internet connection.")
+        if resp.stop_reason == "refusal":
+            raise RuntimeError("Claude declined to answer this one.")
+        return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+    if backend == "cli":
+        cmd = [find_claude_cli(), "-p", "--output-format", "json", "--tools", "", "--system-prompt", system,
+               "--no-session-persistence", "--strict-mcp-config"]
+        with tempfile.TemporaryDirectory() as empty_dir:
+            try:
+                out = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd=empty_dir)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Claude took too long to answer. Try again.")
+        try:
+            res = json.loads(out.stdout)
+        except ValueError:
+            raise RuntimeError("Claude Code didn't answer.")
+        if res.get("is_error"):
+            raise RuntimeError(f"Claude Code: {str(res.get('result') or res.get('subtype'))[:300]}")
+        return (res.get("result") or "").strip()
+    raise RuntimeError("Claude isn't set up: sign in to Claude Code (`claude`), or add an Anthropic API key in Settings.")
+
+
 def parse_plan(text):
     text = text.strip()
     if text.startswith("```"):
@@ -662,7 +717,8 @@ def validate_plan_shape(plan):
             trades.append(trade)
         except (KeyError, TypeError, ValueError):
             continue  # a malformed trade is dropped, never guessed at
-    return {"outlook": str(plan.get("outlook", "")), "trades": trades}
+    raw = [t for t in plan["trades"] if isinstance(t, dict)]
+    return {"outlook": str(plan.get("outlook", "")), "trades": trades, "raw_trades": raw}
 
 
 # ---------- hard limits (enforced here, not by Claude) ----------
@@ -826,6 +882,21 @@ def cancel_and_wait(broker, order_ids, timeout=10):
         pending = still
         if pending:
             time.sleep(0.5)
+
+
+def cancel_protection(broker, symbol):
+    """Remove Trader HQ's protective stops (trailing stops, crypto stop-losses) on a symbol before selling it,
+    so the shares aren't tied up."""
+    key = symbol.replace("/", "")
+    try:
+        orders = broker.open_orders()
+    except (RuntimeError, AttributeError):
+        return []
+    ids = [o["id"] for o in orders if o.get("symbol", "").replace("/", "") == key and o.get("side") == "sell"
+           and (o.get("client_order_id") or "").startswith(("amht-", "amhc-"))]
+    if ids:
+        cancel_and_wait(broker, ids)
+    return ids
 
 
 def entry_order_ids(state, symbol=None):
@@ -1135,6 +1206,8 @@ class LongTermPlan(Plan):
         return f"Place a limit order at {money(o['limit_price'])} (up to {money(o['cost'])})?"
 
     def place(self, t, o, i):
+        if t["side"] == "sell":
+            cancel_protection(self.b, t["symbol"])
         order = self.b.place_limit_order(t["symbol"], t["side"], t["qty"], o["limit_price"],
                                          f"amh-{dt.datetime.now():%Y%m%d%H%M%S}-{i}")
         self.placed_today += 1

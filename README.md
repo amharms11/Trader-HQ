@@ -99,6 +99,23 @@ The dashboard is also a stock, ETF and crypto research tool. Use the tabs at the
 
 Charts use [TradingView Lightweight Charts™](https://www.tradingview.com/) (Apache 2.0, see `vendor/`).
 
+## Watchlists, alerts, recurring buys, reports and tools
+- **Watchlists** (Bot page): keep lists of stocks, ETFs and crypto with live prices. Star any symbol with **☆ Watch** on its page. One click lets the long-term, day-trading, options or crypto bot watch a list, and the Scanner can scan your watchlists.
+- **Price alerts** (Tools page or any symbol page): for example "AAPL below $180" or "BTC moves 5% today". Checked every 20 seconds while Trader HQ is open, with a Mac notification.
+- **Recurring buys** (dollar-cost averaging): a fixed dollar amount every week, every two weeks or monthly. Fractional shares are used where allowed. They stay within your cash and your *Largest buy you place yourself* limit. In live mode they only run after you've typed LIVE that session.
+- **Automatic trailing stops** (Tools): every stock you own gets a trailing stop, for example 8% below its highest price. Positions that already have a bracket or OCO are left alone. Selling yourself or with the bot removes the stop first.
+- **Crypto bot** (Bot page): Claude suggests small crypto buys and sells, on demand or 24/7 while Trader HQ is open, within its own limits (Settings → Crypto bot). Because Alpaca crypto has no bracket orders, each buy gets a stop-loss placed right after it fills.
+- **Ask Claude about this stock:** a plain-English explanation on every symbol page covering what it is, how it's been doing, what the numbers mean and the main risks. It explains only. It never places trades or tells you to buy or sell.
+- **Compare charts:** type up to 3 other symbols under any chart to see their % change on one chart.
+- **Earnings and dividends:** upcoming dividends from Alpaca, and earnings dates with a free Finnhub key. Buy suggestions from the bot warn you when earnings are within a week. Tools has a calendar for everything you own or watch.
+- **Reports:**
+  - **Performance vs. the S&P 500:** your account against simply holding SPY, plus win rate, average win and loss, worst drop and worst losing streak, broken down by strategy (long-term, day trading, options, crypto, recurring buys, your own orders).
+  - **Daily summaries:** created after the close on weekdays, with a Mac notification.
+  - **Tax report:** realized gains and losses for any year, short vs. long term, with a CSV download. It's an estimate from your Alpaca orders using first-in, first-out. Your broker's 1099 is the official record.
+- **Backtester** (Tools): test simple rules on past daily prices against buy-and-hold: moving-average crossover, RSI buy-the-dip, breakouts, and monthly recurring buys. It assumes no fees or slippage, so real results are usually worse.
+
+Background jobs (alerts, recurring buys, trailing stops, crypto stop-losses and daily summaries) run only while Trader HQ is open.
+
 ## Commands
 ```bash
 python trader.py status      # account value, cash, positions (stocks and options)
@@ -194,7 +211,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py test_market.py
+python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py
 ```
 No network or keys needed.
 

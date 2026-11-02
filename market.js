@@ -6,6 +6,7 @@ const MK = {
   view: "bot", kind: "stock", q: "", offset: 0, pageSize: 50,
   symbol: null, range: "1D", chartType: "candles", info: null, bars: null,
   charts: [], series: {}, liveTimer: null, refetchTimer: null,
+  compare: [],
   studies: {volume: true, sma20: false, sma50: true, sma200: false, ema9: false, ema21: false, vwap: false, bb: false, rsi: false, macd: false},
   scanKind: "stock", moversMarket: "stocks",
   ticket: {side: "buy", order_class: "simple", type: "market", amount: "shares", trail: "percent"},
@@ -54,9 +55,11 @@ function route() {
   else if (h.startsWith("markets")) { view = "markets"; const k = h.split("/")[1]; if (k) MK.kind = k; renderMarkets(); }
   else if (h === "scanner") { view = "scanner"; renderScanner(); }
   else if (h === "orders") { view = "orders"; renderOrdersView(); }
+  else if (h === "reports") { view = "reports"; if (window.FX) window.FX.renderReports(); }
+  else if (h === "tools") { view = "tools"; if (window.FX) window.FX.renderTools(); }
   MK.view = view;
   if (view !== "symbol") stopLive();
-  for (const v of ["bot", "markets", "scanner", "orders", "symbol"]) {
+  for (const v of ["bot", "markets", "scanner", "orders", "reports", "tools", "symbol"]) {
     const node = document.getElementById("view-" + v); if (node) node.hidden = v !== view;
   }
   document.querySelectorAll("#nav a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === (view === "symbol" ? "markets" : view) ? "page" : "false"));
@@ -143,7 +146,7 @@ async function openSymbol(sym) {
   sym = sym.toUpperCase();
   const root = document.getElementById("view-symbol");
   if (MK.symbol !== sym) {
-    MK.symbol = sym; MK.info = null;
+    MK.symbol = sym; MK.info = null; MK.compare = [];
     destroyCharts();
     root.replaceChildren(loading("Loading " + sym + "…"));
     try { MK.info = await api("/api/market/info?symbol=" + enc(sym)); }
@@ -167,7 +170,7 @@ function buildSymbolPage() {
       el("div", {class: "row", style: "gap:12px;align-items:center"},
         logo ? el("img", {src: logo, alt: "", class: "logo"}) : null,
         el("div", {},
-          el("h2", {class: "sym-title"}, company.name || asset.name),
+          el("div", {class: "row", style: "gap:10px"}, el("h2", {class: "sym-title"}, company.name || asset.name), el("span", {id: "starBox"})),
           el("div", {class: "row", style: "gap:6px"}, el("b", {}, asset.symbol), asset.exchange && asset.exchange.toUpperCase() !== asset.kind.toUpperCase() ? el("span", {class: "tag"}, asset.exchange) : null, el("span", {class: "tag"}, asset.kind.toUpperCase()),
             company.profile && company.profile.industry ? el("span", {class: "tag"}, company.profile.industry) : null))),
       el("div", {class: "price-row"}, el("span", {id: "symPrice", class: "big"}, "–"), el("span", {id: "symChange"}), el("span", {id: "symLive", class: "pill"}, el("span", {class: "dot"}), el("span", {}, "")))),
@@ -179,6 +182,9 @@ function buildSymbolPage() {
               ["1D", "1W", "1M", "3M", "YTD", "1Y", "5Y", "ALL"].map((r) => el("button", {type: "button", "data-r": r, "aria-pressed": r === MK.range, onclick: () => { MK.range = r; loadChart(); }}, r === "ALL" ? "All" : r))),
             el("div", {class: "seg", role: "group", "aria-label": "Chart type"},
               ["candles", "line"].map((t) => el("button", {type: "button", "data-t": t, "aria-pressed": t === MK.chartType, onclick: () => { MK.chartType = t; document.querySelectorAll("[data-t]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.t === t)); drawCharts(); }}, t === "candles" ? "Candles" : "Line")))),
+          el("div", {class: "row compare-row"},
+            el("input", {type: "search", id: "cmpInput", placeholder: "Compare with… (e.g. SPY)", "aria-label": "Compare with another symbol", style: "max-width:220px"}),
+            el("div", {id: "cmpChips", class: "row", style: "gap:6px"})),
           el("div", {class: "studies", id: "studyBar"},
             Object.keys(MK.studies).map((k) => el("label", {class: "study"},
               el("input", {type: "checkbox", checked: MK.studies[k], onchange: (e) => { MK.studies[k] = e.target.checked; drawCharts(); }}),
@@ -190,6 +196,7 @@ function buildSymbolPage() {
           el("div", {class: "row", style: "justify-content:space-between;margin-top:6px"},
             el("span", {id: "chartNote", class: "hint", style: "margin:0"}),
             el("a", {href: "https://www.tradingview.com/", target: "_blank", rel: "noopener noreferrer", class: "hint", style: "margin:0"}, "Charts by TradingView Lightweight Charts™"))),
+        el("section", {class: "card", id: "explainCard"}),
         el("section", {class: "card"}, el("h2", {}, "Key stats"), el("div", {class: "stats", id: "statsGrid"})),
         company.about || (company.profile && Object.keys(company.profile).length) ? el("section", {class: "card"}, el("h2", {}, "About"),
           company.about ? el("p", {class: "about"}, company.about) : null,
@@ -206,9 +213,58 @@ function buildSymbolPage() {
       el("aside", {class: "sym-side"},
         position ? positionCard(position) : null,
         el("section", {class: "card ticket", id: "ticket"}),
+        el("div", {id: "symExtras", class: "sym-extras"}),
         (company.notes || []).length ? el("section", {class: "card"}, el("h2", {}, "Data notes"), ...company.notes.map((n) => el("p", {class: "hint"}, n))) : null)));
   renderStats();
   renderTicket();
+  setupCompare();
+  if (window.FX) window.FX.symbolExtras();
+}
+
+// ---------- compare charts ----------
+const CMP_COLORS = [["#2a78d6", "#3987e5"], ["#eb6834", "#d95926"], ["#1baf7a", "#199e70"], ["#6250d6", "#9085e9"]];
+const cmpColor = (i) => CMP_COLORS[i][isDark() ? 1 : 0];
+function setupCompare() {
+  const input = document.getElementById("cmpInput");
+  input.addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const q = input.value.trim(); if (!q) return;
+    let sym = q.toUpperCase();
+    try { const r = (await api("/api/market/search?q=" + enc(q))).rows; if (r.length) sym = r[0].symbol; } catch (_) {}
+    if (sym === MK.symbol || MK.compare.some((c) => c.symbol === sym)) { input.value = ""; return; }
+    if (MK.compare.length >= 3) { toast("Compare up to 3 symbols at a time."); return; }
+    try { MK.compare.push({symbol: sym, data: await api(`/api/market/bars?symbol=${enc(sym)}&range=${MK.range}`)}); }
+    catch (err) { toast(err.message, 6000); return; }
+    input.value = ""; renderCompareChips(); drawCharts();
+  });
+  renderCompareChips();
+}
+function renderCompareChips() {
+  const box = document.getElementById("cmpChips"); if (!box) return;
+  box.replaceChildren(...MK.compare.map((c, i) => el("button", {type: "button", class: "chip", title: "Remove", onclick: () => { MK.compare.splice(i, 1); renderCompareChips(); drawCharts(); }},
+    el("span", {class: "key", style: `display:inline-block;width:12px;height:2px;margin-right:6px;vertical-align:middle;background:${cmpColor(i + 1)}`}), c.symbol + " ✕")));
+}
+function drawCompare() {
+  const LWC = window.LightweightCharts, showTime = intraday();
+  document.getElementById("rsiChart").hidden = true; document.getElementById("macdChart").hidden = true;
+  const main = LWC.createChart(document.getElementById("mainChart"), chartOptions(420, showTime));
+  main.applyOptions({localization: {priceFormatter: (v) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%"}});
+  MK.charts.push(main);
+  const sets = [{symbol: MK.symbol, bars: (MK.bars && MK.bars.bars) || []}, ...MK.compare.map((c) => ({symbol: c.symbol, bars: c.data.bars}))];
+  const legend = [];
+  sets.forEach((set, i) => {
+    if (!set.bars.length) return;
+    const base = set.bars[0].c;
+    const series = main.addLineSeries({color: cmpColor(i), lineWidth: 2, priceLineVisible: false, lastValueVisible: true});
+    series.setData(set.bars.map((b) => ({time: localT(b.t), value: (b.c / base - 1) * 100})));
+    if (i === 0) MK.series.price = null;
+    const last = (set.bars[set.bars.length - 1].c / base - 1) * 100;
+    legend.push(el("span", {}, el("span", {style: `display:inline-block;width:12px;height:2px;margin-right:4px;vertical-align:middle;background:${cmpColor(i)}`}), el("b", {}, set.symbol + " "), el("span", {class: last >= 0 ? "up" : "down"}, (last >= 0 ? "+" : "") + last.toFixed(2) + "%")));
+  });
+  main.timeScale().fitContent();
+  document.getElementById("ohlc").replaceChildren(...legend);
+  document.getElementById("chartNote").textContent = "Comparing % change from the start of the range. Studies are hidden while comparing.";
 }
 
 function profileList(p) {
@@ -275,6 +331,8 @@ async function loadChart() {
   try { MK.bars = await api(`/api/market/bars?symbol=${enc(sym)}&range=${rng}`); }
   catch (e) { const n = document.getElementById("chartNote"); if (n) n.textContent = e.message; return; }
   if (sym !== MK.symbol || rng !== MK.range) return;
+  for (const c of MK.compare) { try { c.data = await api(`/api/market/bars?symbol=${enc(c.symbol)}&range=${rng}`); } catch (_) { c.data = {bars: []}; } }
+  if (sym !== MK.symbol || rng !== MK.range) return;
   drawCharts();
 }
 function destroyCharts() { for (const c of MK.charts) c.remove(); MK.charts = []; MK.series = {}; }
@@ -332,6 +390,7 @@ const lineData = (bars, vals) => bars.map((b, i) => vals[i] === null || vals[i] 
 function drawCharts() {
   if (!window.LightweightCharts) { document.getElementById("chartNote").textContent = "The chart library didn't load."; return; }
   destroyCharts();
+  if (MK.compare.length) { drawCompare(); return; }
   const bars = (MK.bars && MK.bars.bars) || [];
   const note = document.getElementById("chartNote");
   note.textContent = bars.length ? `${bars.length} bars · ${MK.bars.timeframe.replace("Min", "-minute").replace("1Hour", "hourly").replace("1Day", "daily").replace("1Week", "weekly").replace("1Month", "monthly")} · prices adjusted for splits` : "No price history for this range.";
@@ -530,7 +589,7 @@ function renderScanner() {
         el("h2", {}, "Custom scan"),
         el("p", {class: "hint"}, "Checks every listed symbol in the chosen list against your filters, using today's prices. The first scan takes 10–30 seconds; repeats within a minute are instant. On the free IEX data feed, volume counts only IEX trades (a small share of the market), so volume filters run low."),
         el("div", {class: "row", style: "margin-bottom:10px"},
-          el("div", {class: "seg", role: "group", id: "scanKind"}, [["stock", "Stocks"], ["etf", "ETFs"], ["crypto", "Crypto"]].map(([v, l]) => el("button", {type: "button", "data-k": v, "aria-pressed": v === MK.scanKind, onclick: (e) => { MK.scanKind = v; document.querySelectorAll("#scanKind button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.k === v)); }}, l)))),
+          el("div", {class: "seg", role: "group", id: "scanKind"}, [["stock", "Stocks"], ["etf", "ETFs"], ["crypto", "Crypto"], ["watchlist", "My watchlists"]].map(([v, l]) => el("button", {type: "button", "data-k": v, "aria-pressed": v === MK.scanKind, onclick: (e) => { MK.scanKind = v; document.querySelectorAll("#scanKind button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.k === v)); }}, l)))),
         el("div", {class: "chips"}, PRESETS.map(([name, filters, sort]) => el("button", {type: "button", class: "chip", onclick: () => { setFilters(filters, sort); runScan(); }}, name))),
         el("form", {id: "scanForm", class: "form", onsubmit: (e) => { e.preventDefault(); runScan(); }},
           el("div", {class: "form-grid"}, FILTERS.map(([k, label]) => el("label", {}, label, el("input", {type: "number", name: k, step: "any"}))),

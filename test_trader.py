@@ -418,6 +418,10 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(s["last_close"], 129)
         self.assertEqual(s["high_60d"], 130)
 
+    def test_summarize_intraday_without_vwap(self):
+        s = pt.summarize_intraday([{"o": 10, "h": 11, "l": 9, "c": 10, "v": 100, "vw": None}])
+        self.assertEqual(s["vwap"], 10)
+
     def test_summarize_intraday(self):
         bars = [{"o": 10, "h": 11, "l": 9, "c": 10, "v": 100, "vw": 10},
                 {"o": 10, "h": 12, "l": 10, "c": 12, "v": 300, "vw": 12}]

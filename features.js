@@ -1,0 +1,442 @@
+// Trader HQ extras: watchlists, alerts, recurring buys, crypto bot, Ask Claude, events, reports, backtests.
+// Uses helpers from dashboard.html and market.js (el, api, toast, money, pct, fmtPrice, fmtBig, chg, go, enc, MK, ...).
+"use strict";
+const FX = window.FX = {};
+const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const fmtDate = (t) => new Date(t * 1000).toLocaleDateString([], {month: "short", day: "numeric", year: "numeric"});
+const pctOrDash = (x) => x === null || x === undefined ? "–" : pct(x);
+const tone = (x) => x > 0 ? "up" : x < 0 ? "down" : "";
+const lineKey = (color) => el("span", {style: `display:inline-block;width:14px;height:2px;margin-right:6px;vertical-align:middle;background:${color}`});
+async function post(path, body, okText) {
+  try { const r = await api(path, body); if (okText) toast(okText); return r; }
+  catch (e) { toast(e.message, 7000); if (e.needLive) location.hash = "#bot"; throw e; }
+}
+function richText(text) {
+  // Turn Claude's **bold** and line breaks into safe DOM (never innerHTML).
+  return (text || "").split(/\n{2,}/).map((para) => el("p", {}, ...para.split(/(\*\*[^*]+\*\*)/).map((part) =>
+    /^\*\*[^*]+\*\*$/.test(part) ? el("b", {}, part.slice(2, -2)) : part.replace(/^#+\s*/gm, ""))));
+}
+
+// ---------- Bot page: watchlists and crypto bot ----------
+let WL = null;
+async function loadWatchlists() { WL = await api("/api/watchlists"); return WL; }
+async function renderWatchCard() {
+  const box = document.getElementById("watchCard"); if (!box || MK.view !== "bot") return;
+  try { await loadWatchlists(); } catch (e) { box.replaceChildren(el("h2", {}, "Watchlists"), el("div", {class: "empty"}, e.message)); return; }
+  const sel = box.dataset.list ? +box.dataset.list : WL.lists[0].id;
+  const list = WL.lists.find((l) => l.id === sel) || WL.lists[0];
+  box.dataset.list = list.id;
+  const rows = list.symbols.map((s) => ({symbol: s, ...(WL.quotes[s] || {})}));
+  box.replaceChildren(
+    el("div", {class: "row", style: "justify-content:space-between"},
+      el("h2", {style: "margin:0"}, "Watchlists"),
+      el("div", {class: "row"},
+        el("select", {"aria-label": "Watchlist", onchange: (e) => { box.dataset.list = e.target.value; renderWatchCard(); }}, WL.lists.map((l) => el("option", {value: l.id, selected: l.id === list.id}, `${l.name} (${l.symbols.length})`))),
+        el("button", {class: "btn small", type: "button", onclick: async () => { const n = prompt("Name for the new watchlist:"); if (n) { const r = await post("/api/watchlists", {action: "create", name: n}); box.dataset.list = r.id; renderWatchCard(); } }}, "New list"),
+        WL.lists.length > 1 ? el("button", {class: "btn small danger", type: "button", onclick: async () => { if (confirm(`Delete the list "${list.name}"?`)) { await post("/api/watchlists", {action: "delete", id: list.id}); box.dataset.list = ""; renderWatchCard(); } }}, "Delete list") : null)),
+    el("form", {class: "row", style: "margin:10px 0", onsubmit: async (e) => {
+      e.preventDefault(); const q = e.target.sym.value.trim(); if (!q) return;
+      let sym = q.toUpperCase();
+      try { const r = (await api("/api/market/search?q=" + enc(q))).rows; if (r.length) sym = r[0].symbol; } catch (_) {}
+      try { await post("/api/watchlists", {action: "add", id: list.id, symbol: sym}, `Added ${sym}.`); e.target.reset(); renderWatchCard(); } catch (_) {}
+    }}, el("input", {type: "search", name: "sym", placeholder: "Add a symbol (e.g. AAPL, BTC)", style: "max-width:240px"}), el("button", {class: "btn small", type: "submit"}, "Add")),
+    rows.length ? quoteTable(rows, [["Symbol", (r) => el("b", {}, r.symbol)], ["Price", (r) => fmtPrice(r.price), 1], ["Change", (r) => chg(r), 1],
+      ["", (r) => el("button", {class: "btn small", type: "button", title: "Remove", onclick: async (e) => { e.stopPropagation(); await post("/api/watchlists", {action: "remove", id: list.id, symbol: r.symbol}); renderWatchCard(); }}, "✕")]])
+      : el("div", {class: "empty"}, "Empty. Add symbols here or with the ☆ Watch button on any stock page."),
+    list.symbols.length ? el("div", {class: "row", style: "margin-top:10px"}, el("span", {class: "hint", style: "margin:0"}, "Let a bot watch this list:"),
+      [["long_term", "Long-term"], ["day", "Day trading"], ["options", "Options"], ["crypto", "Crypto"]].map(([t, l]) =>
+        el("button", {class: "btn small", type: "button", onclick: () => post("/api/watchlists", {action: "use", id: list.id, target: t}, `The ${l.toLowerCase()} bot will watch this list.`)}, l))) : null);
+}
+function cryptoStatus() {
+  if (!window.S || !S.crypto) return;
+  const c = S.crypto, start = document.getElementById("cryptoStart"), stop = document.getElementById("cryptoStop"), text = document.getElementById("cryptoText");
+  if (!start) return;
+  start.hidden = c.running; stop.hidden = !c.running;
+  if (c.running) {
+    const secs = c.next_check ? Math.max(0, Math.round(c.next_check - Date.now() / 1000)) : null;
+    text.textContent = "Running 24/7 while Trader HQ is open. " + (secs !== null ? `Next check in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}.` : "Checking now.");
+  } else text.textContent = "Claude watches your crypto list and suggests small buys with a stop-loss, or sells.";
+}
+let lastNote = null;
+function watchNotifications() {
+  if (!window.S || !S.notifications || !S.notifications.length) return;
+  const top = S.notifications[0];
+  if (lastNote === null) { lastNote = top.id; return; }
+  if (top.id > lastNote) {
+    for (const n of S.notifications.filter((x) => x.id > lastNote).reverse()) toast(`${n.title}: ${n.body}`, 8000);
+    lastNote = top.id;
+  }
+}
+
+// ---------- symbol page extras ----------
+FX.symbolExtras = async function () {
+  const info = MK.info, sym = info.asset.symbol, crypto = info.asset.kind === "crypto";
+  const price = (info.quote || {}).price;
+  // star
+  const star = document.getElementById("starBox");
+  const drawStar = async () => {
+    try { await loadWatchlists(); } catch (_) { return; }
+    const first = WL.lists[0], on = WL.lists.some((l) => l.symbols.includes(sym));
+    star.replaceChildren(el("button", {class: "btn small", type: "button", "aria-pressed": on, onclick: async () => {
+      const lst = WL.lists.find((l) => l.symbols.includes(sym)) || first;
+      await post("/api/watchlists", {action: on ? "remove" : "add", id: lst.id, symbol: sym}, on ? `Removed from ${lst.name}.` : `Added to ${lst.name}.`); drawStar();
+    }}, on ? "★ Watching" : "☆ Watch"));
+  };
+  drawStar();
+  // Ask Claude
+  const ex = document.getElementById("explainCard");
+  const out = el("div", {class: "explain"});
+  ex.replaceChildren(el("div", {class: "row", style: "justify-content:space-between"}, el("h2", {style: "margin:0"}, "Ask Claude about " + sym),
+    el("button", {class: "btn primary small", type: "button", onclick: async (e) => {
+      e.target.disabled = true; out.replaceChildren(loading("Claude is reading the chart, numbers and headlines (up to a minute)…"));
+      try { const r = await api("/api/market/explain", {symbol: sym}); out.replaceChildren(...richText(r.text), el("p", {class: "hint"}, "Written by Claude from the data on this page. Explanation only, not advice. It never places trades.")); }
+      catch (err) { out.replaceChildren(el("p", {class: "msg err"}, err.message)); }
+      e.target.disabled = false;
+    }}, "Explain this " + (crypto ? "coin" : info.asset.kind === "etf" ? "ETF" : "stock"))),
+    el("p", {class: "hint"}, "A plain-English summary of what it is, how it's been doing, what the numbers mean and the main risks."), out);
+  // side cards
+  const box = document.getElementById("symExtras");
+  const events = el("section", {class: "card"}, el("h2", {}, "Upcoming events"), loading());
+  const alertForm = el("form", {class: "form", onsubmit: async (e) => {
+    e.preventDefault(); const f = e.target;
+    try { await post("/api/alerts", {symbol: sym, kind: f.kind.value, value: f.value.value, note: f.note.value}, "Alert set. You'll get a Mac notification."); f.note.value = ""; } catch (_) {}
+  }},
+    el("label", {}, "Notify me when", el("select", {name: "kind", onchange: (e) => { const v = e.target.form.value; v.value = e.target.value === "move" ? "5" : price ? (price * (e.target.value === "above" ? 1.05 : 0.95)).toFixed(2) : ""; }},
+      el("option", {value: "above"}, "Price rises above ($)"), el("option", {value: "below"}, "Price falls below ($)"), el("option", {value: "move"}, "It moves more than (% today)"))),
+    el("input", {type: "number", name: "value", step: "any", min: 0, value: price ? (price * 1.05).toFixed(2) : "", "aria-label": "Alert value"}),
+    el("input", {type: "text", name: "note", placeholder: "Note (optional)", maxlength: 120, "aria-label": "Note"}),
+    el("button", {class: "btn small", type: "submit"}, "Set alert"));
+  const recForm = el("form", {class: "form", onsubmit: async (e) => {
+    e.preventDefault(); const f = e.target;
+    try { await post("/api/recurring", {action: "add", symbol: sym, amount: f.amount.value, frequency: f.frequency.value, day: f.day.value}, "Recurring buy set up. It runs while Trader HQ is open."); } catch (_) {}
+  }},
+    el("label", {}, "Amount ($)", el("input", {type: "number", name: "amount", min: 1, step: "any", value: 50})),
+    el("label", {}, "How often", el("select", {name: "frequency", onchange: (e) => fillDays(e.target.form)}, el("option", {value: "weekly"}, "Every week"), el("option", {value: "biweekly"}, "Every two weeks"), el("option", {value: "monthly"}, "Every month"))),
+    el("label", {}, "On", el("select", {name: "day"})),
+    el("p", {class: "hint"}, crypto || info.asset.fractionable ? "Buys the exact dollar amount (fractional shares)." : "This stock can't be bought in fractions, so it buys as many whole shares as the amount allows."),
+    el("button", {class: "btn small", type: "submit"}, "Set up recurring buy"));
+  fillDays(recForm);
+  box.replaceChildren(events, el("section", {class: "card"}, el("h2", {}, "Price alert"), alertForm), el("section", {class: "card"}, el("h2", {}, "Recurring buy"), recForm));
+  try {
+    const ev = await api("/api/market/events?symbol=" + enc(sym));
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = [];
+    if (ev.earnings === null && !crypto) rows.push(el("p", {class: "hint"}, "Add a free Finnhub key in Settings to see earnings dates."));
+    else if (ev.earnings && ev.earnings.length) rows.push(el("p", {}, el("b", {}, "Earnings report: "), ev.earnings[0].date + (ev.earnings[0].hour === "bmo" ? " (before the open)" : ev.earnings[0].hour === "amc" ? " (after the close)" : "")));
+    else if (!crypto) rows.push(el("p", {}, "No earnings report in the next 3 months."));
+    const divs = ev.dividends || [], next = divs.find((d) => d.ex_date >= today), past = divs.filter((d) => d.ex_date < today);
+    if (next) rows.push(el("p", {}, el("b", {}, "Next dividend: "), `${money(next.rate)} per share. Own it before ${next.ex_date}, paid ${next.payable_date || "later"}.`));
+    if (past.length && price) { const yr = past.slice(-4).reduce((a, d) => a + d.rate, 0); rows.push(el("p", {}, el("b", {}, "Dividends, last 12 months: "), `${money(yr)} per share (about ${(yr / price * 100).toFixed(2)}% yield).`)); }
+    if (!crypto && !divs.length) rows.push(el("p", {class: "hint"}, "No dividends in the last year."));
+    if (crypto) rows.push(el("p", {class: "hint"}, "Crypto has no earnings or dividends."));
+    events.replaceChildren(el("h2", {}, "Upcoming events"), ...rows);
+  } catch (e) { events.replaceChildren(el("h2", {}, "Upcoming events"), el("p", {class: "hint"}, e.message)); }
+};
+function fillDays(form) {
+  const monthly = form.frequency.value === "monthly";
+  form.day.replaceChildren(...(monthly ? Array.from({length: 28}, (_, i) => el("option", {value: i + 1}, "Day " + (i + 1))) : WEEKDAY_NAMES.map((d, i) => el("option", {value: i}, d))));
+}
+
+// ---------- Reports ----------
+let REP = {period: "3M"};
+FX.renderReports = function () {
+  const root = document.getElementById("view-reports");
+  if (!root.dataset.built) {
+    root.dataset.built = "1";
+    const year = new Date().getFullYear();
+    root.append(
+      el("section", {class: "card"},
+        el("div", {class: "row", style: "justify-content:space-between"}, el("h2", {style: "margin:0"}, "Is the bot working? Performance vs. the S&P 500"),
+          el("div", {class: "seg", role: "group", id: "perfSeg"}, ["1M", "3M", "1Y", "ALL"].map((p) => el("button", {type: "button", "data-p": p, "aria-pressed": p === REP.period, onclick: () => { REP.period = p; loadPerformance(); }}, p === "ALL" ? "All" : p)))),
+        el("p", {class: "hint"}, "Your account's % change compared with simply holding SPY (an S&P 500 fund) over the same time. Closed trades are matched first-in, first-out from your Alpaca order history and grouped by what placed them."),
+        el("div", {id: "perfBody"})),
+      el("section", {class: "card"},
+        el("div", {class: "row", style: "justify-content:space-between"}, el("h2", {style: "margin:0"}, "Daily summaries"),
+          el("button", {class: "btn small", type: "button", onclick: async () => { await post("/api/reports/summary-now", {}, "Summary created."); loadSummaries(); }}, "Make today's summary now")),
+        el("p", {class: "hint"}, "Created automatically after the market closes on weekdays while Trader HQ is open, with a Mac notification."),
+        el("div", {id: "sumBody"})),
+      el("section", {class: "card"},
+        el("div", {class: "row", style: "justify-content:space-between"}, el("h2", {style: "margin:0"}, "Tax report: realized gains and losses"),
+          el("div", {class: "row"}, el("select", {id: "taxYear", onchange: loadTax}, [year, year - 1, year - 2].map((y) => el("option", {value: y}, y))),
+            el("a", {class: "btn small", id: "taxCsv", href: "#", download: ""}, "Download CSV"))),
+        el("p", {class: "hint"}, "An estimate from your Alpaca orders (first-in, first-out). Held over a year is long-term. Paper trades aren't taxable, and your broker's 1099 is the official record."),
+        el("div", {id: "taxBody"})));
+  }
+  loadPerformance(); loadSummaries(); loadTax();
+};
+async function loadPerformance() {
+  document.querySelectorAll("#perfSeg button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.p === REP.period));
+  const body = document.getElementById("perfBody"); body.replaceChildren(loading("Reading your account history…"));
+  let r;
+  try { r = await api("/api/reports/performance?period=" + REP.period); } catch (e) { body.replaceChildren(el("div", {class: "empty"}, e.message)); return; }
+  const o = r.overall, beat = r.account_return !== null && r.spy_return !== null ? r.account_return - r.spy_return : null;
+  const stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
+  const chartBox = el("div", {class: "perf-chart"});
+  body.replaceChildren(
+    el("div", {class: "stats", style: "margin-top:8px"},
+      stat("Your account", pctOrDash(r.account_return), tone(r.account_return)), stat("Holding SPY", pctOrDash(r.spy_return), tone(r.spy_return)),
+      stat(beat === null ? "Difference" : beat >= 0 ? "You beat SPY by" : "You trailed SPY by", beat === null ? "–" : Math.abs(beat).toFixed(2) + " pts", tone(beat)),
+      stat("Worst drop (max drawdown)", r.max_drawdown === null ? "–" : r.max_drawdown.toFixed(1) + "%", r.max_drawdown < 0 ? "down" : ""),
+      stat("Closed trades", String(o.trades)), stat("Win rate", o.win_rate === null ? "–" : o.win_rate.toFixed(0) + "%"),
+      stat("Average win / loss", (o.avg_win === null ? "–" : money(o.avg_win)) + " / " + (o.avg_loss === null ? "–" : money(o.avg_loss))),
+      stat("Worst losing streak", o.worst_losing_streak + " in a row")),
+    el("div", {class: "row legend"}, el("span", {}, lineKey(cmpColor(0)), "Your account"), el("span", {}, lineKey(cmpColor(1)), "Holding SPY")),
+    chartBox,
+    r.by_strategy.length ? el("div", {class: "scroll"}, el("h3", {}, "By strategy"), el("table", {},
+      el("thead", {}, el("tr", {}, ["Strategy", "Trades", "Win rate", "Profit / loss", "Avg win", "Avg loss", "Profit factor", "Avg days held"].map((h, i) => el("th", {class: i ? "num" : ""}, h)))),
+      el("tbody", {}, r.by_strategy.map((s) => el("tr", {}, el("td", {}, s.strategy), el("td", {class: "num"}, s.trades), el("td", {class: "num"}, s.win_rate === null ? "–" : s.win_rate.toFixed(0) + "%"),
+        el("td", {class: "num " + tone(s.total_pnl)}, signed(s.total_pnl)), el("td", {class: "num"}, s.avg_win === null ? "–" : money(s.avg_win)), el("td", {class: "num"}, s.avg_loss === null ? "–" : money(s.avg_loss)),
+        el("td", {class: "num"}, s.profit_factor === null ? "–" : s.profit_factor.toFixed(2)), el("td", {class: "num"}, s.avg_days_held === null ? "–" : s.avg_days_held.toFixed(1)))))))
+      : el("div", {class: "empty"}, "No closed trades in this period yet. Results appear here once positions are sold."),
+    r.recent_trades.length ? el("div", {class: "scroll"}, el("h3", {}, "Recent closed trades"), el("table", {},
+      el("thead", {}, el("tr", {}, ["Closed", "Symbol", "Strategy", "Qty", "Bought", "Sold", "Profit / loss"].map((h, i) => el("th", {class: i > 2 ? "num" : ""}, h)))),
+      el("tbody", {}, r.recent_trades.map((t) => el("tr", {}, el("td", {}, t.closed.slice(0, 10)), el("td", {}, t.symbol), el("td", {}, t.strategy), el("td", {class: "num"}, +t.qty.toFixed(6)),
+        el("td", {class: "num"}, fmtPrice(t.buy_price)), el("td", {class: "num"}, fmtPrice(t.sell_price)), el("td", {class: "num " + tone(t.pnl)}, signed(t.pnl))))))) : null,
+    el("p", {class: "hint"}, "A rule of thumb: run on paper for at least a few months and 50+ closed trades. If the account doesn't beat simply holding SPY after that, the bot isn't adding value."));
+  pctChart(chartBox, [{label: "Your account", color: cmpColor(0), points: r.account}, {label: "Holding SPY", color: cmpColor(1), points: r.spy}]);
+}
+function pctChart(box, sets, height) {
+  if (!window.LightweightCharts || !sets.some((s) => s.points.length > 1)) { box.replaceChildren(el("div", {class: "empty"}, "Not enough history yet. Check back after a few trading days.")); return; }
+  const c = LightweightCharts.createChart(box, chartOptions(height || 280, false));
+  c.applyOptions({localization: {priceFormatter: (v) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%"}});
+  for (const s of sets) {
+    if (s.points.length < 2) continue;
+    const seen = new Set();
+    const data = s.points.map((p) => ({time: localT(p.t), value: p.pct})).filter((p) => !seen.has(p.time) && seen.add(p.time));
+    c.addLineSeries({color: s.color, lineWidth: 2, priceLineVisible: false, title: ""}).setData(data);
+  }
+  c.timeScale().fitContent();
+  return c;
+}
+async function loadSummaries() {
+  const body = document.getElementById("sumBody");
+  try {
+    const rows = (await api("/api/reports/summaries")).rows;
+    body.replaceChildren(...(rows.length ? rows.map((s) => el("div", {class: "summary"}, el("b", {}, new Date(s.day + "T12:00").toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"})),
+      el("span", {class: tone(s.change)}, ` ${signed(s.change)} (${pct(s.change_pct)})`), el("p", {}, s.text),
+      s.fills.length ? el("p", {class: "hint"}, "Trades: " + s.fills.map((f) => `${f.side} ${+f.qty.toFixed(6)} ${f.symbol} @ ${fmtPrice(f.price)} (${f.strategy})`).join("; ")) : null))
+      : [el("div", {class: "empty"}, "No summaries yet.")]));
+  } catch (e) { body.replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+async function loadTax() {
+  const year = document.getElementById("taxYear").value, body = document.getElementById("taxBody");
+  document.getElementById("taxCsv").href = `/api/reports/tax?year=${year}&format=csv`;
+  body.replaceChildren(loading());
+  try {
+    const r = await api("/api/reports/tax?year=" + year), t = r.totals;
+    body.replaceChildren(
+      el("div", {class: "stats"}, ...["Short-term", "Long-term"].flatMap((k) => [
+        el("div", {class: "stat"}, el("span", {}, k + " gain / loss"), el("b", {class: tone(t[k].gain)}, signed(t[k].gain))),
+        el("div", {class: "stat"}, el("span", {}, k + " sales"), el("b", {}, t[k].count + " (proceeds " + money(t[k].proceeds) + ")"))])),
+      r.rows.length ? el("div", {class: "scroll", style: "max-height:360px;margin-top:10px"}, el("table", {},
+        el("thead", {}, el("tr", {}, ["Symbol", "Qty", "Acquired", "Sold", "Proceeds", "Cost", "Gain / loss", "Term"].map((h, i) => el("th", {class: i > 3 && i < 7 ? "num" : ""}, h)))),
+        el("tbody", {}, r.rows.slice(-300).reverse().map((x) => el("tr", {}, el("td", {}, x.symbol), el("td", {}, +x.qty.toFixed(6)), el("td", {}, x.opened.slice(0, 10)), el("td", {}, x.closed.slice(0, 10)),
+          el("td", {class: "num"}, money(x.proceeds)), el("td", {class: "num"}, money(x.cost)), el("td", {class: "num " + tone(x.pnl)}, signed(x.pnl)), el("td", {}, x.term))))))
+        : el("div", {class: "empty"}, "No sales in " + year + "."));
+  } catch (e) { body.replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+
+// ---------- Tools ----------
+FX.renderTools = function () {
+  const root = document.getElementById("view-tools");
+  if (!root.dataset.built) {
+    root.dataset.built = "1";
+    const symInput = (name) => el("input", {type: "text", name, placeholder: "Symbol, e.g. AAPL or BTC/USD", required: true, autocomplete: "off"});
+    const resolve = async (q) => { try { const r = (await api("/api/market/search?q=" + enc(q))).rows; if (r.length) return r[0].symbol; } catch (_) {} return q.toUpperCase(); };
+    root.append(
+      el("div", {class: "two-eq"},
+        el("section", {class: "card"}, el("h2", {}, "Price alerts"),
+          el("p", {class: "hint"}, "Checked every 20 seconds while Trader HQ is open. You get a Mac notification once, then the alert switches off."),
+          el("form", {class: "form-grid", onsubmit: async (e) => { e.preventDefault(); const f = e.target;
+            try { await post("/api/alerts", {symbol: await resolve(f.sym.value), kind: f.kind.value, value: f.value.value, note: f.note.value}, "Alert set."); f.reset(); loadAlerts(); } catch (_) {} }},
+            el("label", {}, "Symbol", symInput("sym")),
+            el("label", {}, "When", el("select", {name: "kind"}, el("option", {value: "above"}, "Price rises above ($)"), el("option", {value: "below"}, "Price falls below ($)"), el("option", {value: "move"}, "Moves more than (% today)"))),
+            el("label", {}, "Value", el("input", {type: "number", name: "value", step: "any", min: 0, required: true})),
+            el("label", {}, "Note (optional)", el("input", {type: "text", name: "note", maxlength: 120})),
+            el("div", {style: "align-self:end"}, el("button", {class: "btn primary", type: "submit"}, "Add alert"))),
+          el("div", {id: "alertList", class: "scroll", style: "margin-top:10px"})),
+        el("section", {class: "card"}, el("h2", {}, "Recurring buys"),
+          el("p", {class: "hint"}, "Buys a fixed dollar amount on a schedule (dollar-cost averaging). Stocks buy during market hours on or after the scheduled day; crypto any time. Runs while Trader HQ is open, within your cash and order limits."),
+          el("form", {class: "form-grid", onsubmit: async (e) => { e.preventDefault(); const f = e.target;
+            try { await post("/api/recurring", {action: "add", symbol: await resolve(f.sym.value), amount: f.amount.value, frequency: f.frequency.value, day: f.day.value}, "Recurring buy set up."); loadRecurring(); } catch (_) {} }},
+            el("label", {}, "Symbol", symInput("sym")),
+            el("label", {}, "Amount ($)", el("input", {type: "number", name: "amount", min: 1, step: "any", value: 50, required: true})),
+            el("label", {}, "How often", el("select", {name: "frequency", onchange: (e) => fillDays(e.target.form)}, el("option", {value: "weekly"}, "Every week"), el("option", {value: "biweekly"}, "Every two weeks"), el("option", {value: "monthly"}, "Every month"))),
+            el("label", {}, "On", el("select", {name: "day"})),
+            el("div", {style: "align-self:end"}, el("button", {class: "btn primary", type: "submit"}, "Add"))),
+          el("div", {id: "recList", class: "scroll", style: "margin-top:10px"}))),
+      el("section", {class: "card"}, el("h2", {}, "Backtest a strategy"),
+        el("p", {class: "hint"}, "See how simple trading rules would have done on past daily prices, compared with buying and holding. Trades happen at the next day's open after a signal, with no fees, taxes or slippage, so real results are usually worse. Claude's suggestions can't be backtested because they aren't fixed rules."),
+        el("form", {id: "btForm", class: "form", onsubmit: (e) => { e.preventDefault(); runBacktest(e.target); }},
+          el("div", {class: "form-grid"},
+            el("label", {}, "Symbol", el("input", {type: "text", name: "sym", value: "SPY", required: true, autocomplete: "off"})),
+            el("label", {}, "Period", el("select", {name: "range"}, el("option", {value: "1Y"}, "1 year"), el("option", {value: "BT5Y", selected: true}, "5 years"), el("option", {value: "BTALL"}, "All available"))),
+            el("label", {}, "Strategy", el("select", {name: "strategy", onchange: (e) => btParams(e.target.form)},
+              el("option", {value: "sma"}, "Moving-average crossover"), el("option", {value: "rsi"}, "RSI buy-the-dip"), el("option", {value: "breakout"}, "Breakout (new highs)"), el("option", {value: "dca"}, "Monthly recurring buy"))),
+            el("label", {}, "Starting cash ($)", el("input", {type: "number", name: "cash", value: 10000, min: 100, step: "any"}))),
+          el("div", {class: "form-grid", id: "btParams"}),
+          el("p", {class: "hint", id: "btExplain"}),
+          el("div", {}, el("button", {class: "btn primary", type: "submit"}, "Run backtest"))),
+        el("div", {id: "btResult"})),
+      el("div", {class: "two-eq"},
+        el("section", {class: "card"}, el("h2", {}, "Earnings & dividend calendar"), el("p", {class: "hint"}, "For everything you own or watch."), el("div", {id: "calBody"})),
+        el("section", {class: "card"}, el("h2", {}, "Automatic trailing stops"),
+          el("p", {class: "hint"}, "Gives every stock you own a trailing stop: if the price falls this far below its highest point since you bought, it sells. Positions that already have sell orders (like a bracket or OCO) are left alone. Selling yourself or with the bot removes the stop first. Checked every 2 minutes while Trader HQ is open."),
+          el("form", {class: "row", id: "protForm", onsubmit: async (e) => { e.preventDefault(); const v = e.target.pct.value || 0;
+            try { await api("/api/settings", {settings: {market: {auto_trailing_stop_pct: v}}}); toast(+v ? `Trailing stops on at ${v}%.` : "Automatic trailing stops are off."); } catch (err) { toast(err.message, 7000); } }},
+            el("label", {}, "Trail by (%), 0 = off", el("input", {type: "number", name: "pct", min: 0, max: 50, step: "any", style: "max-width:120px"})),
+            el("button", {class: "btn", type: "submit", style: "align-self:end"}, "Save")))),
+      el("section", {class: "card"}, el("h2", {}, "Notifications"), el("div", {id: "noteList", class: "log"})));
+    fillDays(root.querySelectorAll("form.form-grid")[1]);  // the recurring-buy form
+    btParams(document.getElementById("btForm"));
+  }
+  loadAlerts(); loadRecurring(); loadCalendar(); loadNotes();
+  api("/api/settings").then((r) => { document.querySelector("#protForm input[name=pct]").value = r.settings.market.auto_trailing_stop_pct; }).catch(() => {});
+};
+async function loadAlerts() {
+  const box = document.getElementById("alertList");
+  try {
+    const rows = (await api("/api/alerts")).rows;
+    const desc = (a) => ({above: `price ≥ ${money(a.value)}`, below: `price ≤ ${money(a.value)}`, move: `moves ≥ ${a.value}% in a day`})[a.kind];
+    box.replaceChildren(rows.length ? el("table", {}, el("tbody", {}, rows.map((a) => el("tr", {},
+      el("td", {}, el("a", {href: "#s/" + enc(a.symbol)}, a.symbol)), el("td", {}, desc(a) + (a.note ? ` · ${a.note}` : "")),
+      el("td", {}, a.active ? el("span", {class: "tag"}, "Watching") : el("span", {class: "muted"}, "Triggered " + (a.triggered ? new Date(a.triggered * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "") + (a.price ? " at " + fmtPrice(a.price) : ""))),
+      el("td", {}, el("button", {class: "btn small", type: "button", onclick: async () => { await post("/api/alerts", {action: "delete", id: a.id}); loadAlerts(); }}, "Delete")))))) : el("div", {class: "empty"}, "No alerts yet."));
+  } catch (e) { box.replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+async function loadRecurring() {
+  const box = document.getElementById("recList");
+  try {
+    const r = await api("/api/recurring");
+    box.replaceChildren(r.rows.length ? el("table", {}, el("tbody", {}, r.rows.map((x) => el("tr", {},
+      el("td", {}, el("a", {href: "#s/" + enc(x.symbol)}, x.symbol)), el("td", {}, money(x.amount) + " · " + x.schedule + (x.mode !== r.mode ? ` (${x.mode} account)` : "")),
+      el("td", {}, x.active ? "Next: " + x.next_run : el("span", {class: "muted"}, "Paused"), x.last_result ? el("div", {class: "hint", style: "margin:2px 0 0"}, "Last: " + x.last_run + " · " + x.last_result) : null),
+      el("td", {}, el("div", {class: "row"},
+        el("button", {class: "btn small", type: "button", onclick: async () => { await post("/api/recurring", {action: x.active ? "pause" : "resume", id: x.id}); loadRecurring(); }}, x.active ? "Pause" : "Resume"),
+        el("button", {class: "btn small danger", type: "button", onclick: async () => { if (confirm("Delete this recurring buy?")) { await post("/api/recurring", {action: "delete", id: x.id}); loadRecurring(); } }}, "Delete"))))))) : el("div", {class: "empty"}, "No recurring buys yet."));
+  } catch (e) { box.replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+async function loadCalendar() {
+  const box = document.getElementById("calBody"); box.replaceChildren(loading());
+  try {
+    const r = await api("/api/calendar");
+    const rows = r.rows;
+    box.replaceChildren(
+      !r.has_finnhub ? el("p", {class: "hint"}, "Earnings dates need a free Finnhub key (Settings). Dividends are shown without it.") : null,
+      rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ["Symbol", "Earnings", "Ex-dividend", "Dividend"].map((h) => el("th", {}, h)))),
+        el("tbody", {}, rows.map((x) => el("tr", {}, el("td", {}, el("a", {href: "#s/" + enc(x.symbol)}, x.symbol)),
+          el("td", {}, x.earnings ? x.earnings + (x.earnings_hour ? ` (${x.earnings_hour})` : "") : "–"), el("td", {}, x.ex_dividend || "–"), el("td", {}, x.dividend ? money(x.dividend) : "–")))))
+        : el("div", {class: "empty"}, r.symbols ? "Nothing scheduled for your holdings and watchlists." : "Own or watch some stocks to see their dates here."));
+  } catch (e) { box.replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+async function loadNotes() {
+  const box = document.getElementById("noteList");
+  try {
+    const rows = (await api("/api/notifications")).rows;
+    box.replaceChildren(...(rows.length ? rows.map((n) => el("div", {}, el("time", {}, new Date(n.time * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})), el("b", {}, n.title + ": "), n.body)) : [el("div", {class: "empty"}, "Nothing yet.")]));
+  } catch (e) { box.replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+
+// ---------- backtester ----------
+const BT_PARAMS = {
+  sma: [["fast", "Fast average (days)", 50], ["slow", "Slow average (days)", 200]],
+  rsi: [["period", "RSI period (days)", 14], ["buy", "Buy when RSI falls below", 30], ["sell", "Sell when RSI rises above", 55]],
+  breakout: [["entry", "Buy on a new high over (days)", 55], ["exit", "Sell on a new low over (days)", 20]],
+  dca: [["amount", "Invest each month ($)", 500]],
+};
+const BT_TEXT = {
+  sma: "Own it while the fast moving average is above the slow one (a classic trend-following rule, like the 50/200-day 'golden cross').",
+  rsi: "Buy after a sharp drop (low RSI), sell once it bounces back (higher RSI).",
+  breakout: "Buy when the price closes at its highest level in N days, sell when it closes at its lowest in M days.",
+  dca: "Invest the same amount at the start of every month no matter the price, starting from nothing. Compared with investing the same total all at once.",
+};
+function btParams(form) {
+  const s = form.strategy.value;
+  document.getElementById("btParams").replaceChildren(...BT_PARAMS[s].map(([k, label, v]) => el("label", {}, label, el("input", {type: "number", name: k, value: v, min: 1, step: "any"}))));
+  document.getElementById("btExplain").textContent = BT_TEXT[s];
+  form.cash.closest("label").hidden = s === "dca";
+}
+function backtest(bars, strategy, p, startCash) {
+  const closes = bars.map((b) => b.c), n = bars.length, want = Array(n).fill(0);
+  if (strategy === "sma") { const f = sma(closes, p.fast), s = sma(closes, p.slow); for (let i = 0; i < n; i++) want[i] = f[i] !== null && s[i] !== null && f[i] > s[i] ? 1 : 0; }
+  if (strategy === "rsi") { const r = rsi(closes, p.period); let pos = 0; for (let i = 0; i < n; i++) { if (r[i] !== null) { if (!pos && r[i] < p.buy) pos = 1; else if (pos && r[i] > p.sell) pos = 0; } want[i] = pos; } }
+  if (strategy === "breakout") { let pos = 0; for (let i = 0; i < n; i++) {
+    if (i >= p.entry && !pos && bars[i].c > Math.max(...bars.slice(i - p.entry, i).map((b) => b.h))) pos = 1;
+    else if (i >= p.exit && pos && bars[i].c < Math.min(...bars.slice(i - p.exit, i).map((b) => b.l))) pos = 0;
+    want[i] = pos; } }
+  let cash = startCash, shares = 0, entry = null;
+  const equity = [], trades = [];
+  let invested = 0, contributed = 0, month = null;
+  for (let i = 0; i < n; i++) {
+    const b = bars[i];
+    if (strategy === "dca") {
+      const m = new Date(b.t * 1000).getUTCMonth();
+      if (m !== month) { month = m; shares += p.amount / b.o; contributed += p.amount; }
+      equity.push({t: b.t, v: shares * b.c, contributed});
+      continue;
+    }
+    const target = i > 0 ? want[i - 1] : 0;  // act at today's open on yesterday's signal
+    if (target && !shares) { shares = cash / b.o; cash = 0; entry = {t: b.t, p: b.o}; }
+    else if (!target && shares) { cash = shares * b.o; trades.push({entry_t: entry.t, entry_p: entry.p, exit_t: b.t, exit_p: b.o, ret: (b.o / entry.p - 1) * 100}); shares = 0; entry = null; }
+    if (shares) invested++;
+    equity.push({t: b.t, v: cash + shares * b.c});
+  }
+  if (shares && entry) trades.push({entry_t: entry.t, entry_p: entry.p, exit_t: null, exit_p: bars[n - 1].c, ret: (bars[n - 1].c / entry.p - 1) * 100, open: true});
+  return {equity, trades, exposure: strategy === "dca" ? 100 : invested / n * 100, contributed};
+}
+async function runBacktest(form) {
+  const out = document.getElementById("btResult"); out.replaceChildren(loading("Loading price history…"));
+  const q = form.sym.value.trim(); let sym = q.toUpperCase();
+  try { const r = (await api("/api/market/search?q=" + enc(q))).rows; if (r.length) sym = r[0].symbol; } catch (_) {}
+  let bars;
+  try { bars = (await api(`/api/market/bars?symbol=${enc(sym)}&range=${form.range.value}`)).bars; } catch (e) { out.replaceChildren(el("div", {class: "empty"}, e.message)); return; }
+  if (bars.length < 30) { out.replaceChildren(el("div", {class: "empty"}, "Not enough daily history for " + sym + ".")); return; }
+  const strategy = form.strategy.value, p = {};
+  for (const [k] of BT_PARAMS[strategy]) p[k] = +form.elements[k].value;
+  const cash = +form.cash.value || 10000, res = backtest(bars, strategy, p, cash);
+  const years = (bars[bars.length - 1].t - bars[0].t) / (365.25 * 86400);
+  const first = bars[0], last = bars[bars.length - 1];
+  const vals = res.equity.map((e) => e.v);
+  let stratRet, bhRet, bhPoints;
+  if (strategy === "dca") {
+    stratRet = (vals[vals.length - 1] / res.contributed - 1) * 100;
+    bhRet = (last.c / first.o - 1) * 100;
+    bhPoints = bars.map((b) => ({t: b.t, pct: (b.c / first.o - 1) * 100}));
+  } else {
+    stratRet = (vals[vals.length - 1] / cash - 1) * 100;
+    bhRet = (last.c / first.o - 1) * 100;
+    bhPoints = bars.map((b) => ({t: b.t, pct: (b.c / first.o - 1) * 100}));
+  }
+  const cagr = (r) => years > 0.9 ? ((1 + r / 100) ** (1 / years) - 1) * 100 : null;
+  const dd = (arr) => { let peak = -Infinity, w = 0; for (const v of arr) { peak = Math.max(peak, v); if (peak > 0) w = Math.min(w, v / peak - 1); } return w * 100; };
+  const closed = res.trades.filter((t) => !t.open), wins = closed.filter((t) => t.ret > 0);
+  const stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
+  const stratPoints = strategy === "dca" ? res.equity.map((e) => ({t: e.t, pct: (e.v / e.contributed - 1) * 100})) : res.equity.map((e) => ({t: e.t, pct: (e.v / cash - 1) * 100}));
+  const chartBox = el("div", {class: "perf-chart"});
+  out.replaceChildren(
+    el("h3", {}, `${sym}: ${fmtDate(first.t)} to ${fmtDate(last.t)} (${years.toFixed(1)} years)`),
+    el("div", {class: "stats"},
+      stat("Strategy return", pct(stratRet), tone(stratRet)), stat("Buy & hold return", pct(bhRet), tone(bhRet)),
+      stat("Strategy per year", cagr(stratRet) === null ? "–" : pct(cagr(stratRet))), stat("Buy & hold per year", cagr(bhRet) === null ? "–" : pct(cagr(bhRet))),
+      stat("Strategy worst drop", dd(vals).toFixed(1) + "%", "down"), stat("Buy & hold worst drop", dd(bars.map((b) => b.c)).toFixed(1) + "%", "down"),
+      strategy === "dca" ? stat("Total invested", money(res.contributed)) : stat("Trades", String(res.trades.length)),
+      strategy === "dca" ? stat("Ending value", money(vals[vals.length - 1])) : stat("Win rate", closed.length ? (wins.length / closed.length * 100).toFixed(0) + "%" : "–"),
+      strategy === "dca" ? null : stat("Time invested", res.exposure.toFixed(0) + "%")),
+    el("div", {class: "row legend"}, el("span", {}, lineKey(cmpColor(0)), "Strategy"), el("span", {}, lineKey(cmpColor(1)), "Buy & hold")),
+    chartBox,
+    strategy !== "dca" && res.trades.length ? el("details", {}, el("summary", {style: "cursor:pointer"}, `All ${res.trades.length} trades`),
+      el("div", {class: "scroll", style: "max-height:300px"}, el("table", {}, el("thead", {}, el("tr", {}, ["Bought", "Price", "Sold", "Price", "Return"].map((h, i) => el("th", {class: i % 2 ? "num" : ""}, h)))),
+        el("tbody", {}, res.trades.map((t) => el("tr", {}, el("td", {}, fmtDate(t.entry_t)), el("td", {class: "num"}, fmtPrice(t.entry_p)),
+          el("td", {}, t.open ? "still open" : fmtDate(t.exit_t)), el("td", {class: "num"}, fmtPrice(t.exit_p)), el("td", {class: "num " + tone(t.ret)}, pct(t.ret)))))))) : null,
+    el("p", {class: "hint"}, "Past results don't predict future ones. A rule that worked on one stock or period often fails on another, so try several."));
+  pctChart(chartBox, [{label: "Strategy", color: cmpColor(0), points: stratPoints}, {label: "Buy & hold", color: cmpColor(1), points: bhPoints}], 300);
+}
+
+// ---------- wiring ----------
+document.getElementById("cryptoStart").onclick = () => post("/api/crypto/start", {}, "Crypto bot started.").then(refresh).catch(() => {});
+document.getElementById("cryptoStop").onclick = () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(refresh).catch(() => {});
+setInterval(() => { cryptoStatus(); watchNotifications(); }, 1000);
+setInterval(() => { if (MK.view === "bot") renderWatchCard(); }, 15000);
+window.addEventListener("hashchange", () => { if (MK.view === "bot") renderWatchCard(); });
+renderWatchCard();
+route();

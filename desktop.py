@@ -23,6 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import features as F
 import market as M
 import trader as T
 import updater as U
@@ -31,6 +32,7 @@ PORT = 8780
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "dashboard.html"
 STATIC = {"/market.js": ("market.js", "text/javascript; charset=utf-8"),
+          "/features.js": ("features.js", "text/javascript; charset=utf-8"),
           "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8")}
 DAY_TTL = 180          # seconds a day-trade suggestion can be approved before it goes stale
 PLAN_TTL = 30 * 60     # seconds a long-term or options suggestion can be approved
@@ -67,7 +69,7 @@ def clean_settings(posted):
             items = [str(x).upper().strip() for x in items if str(x).strip()]
             if not items:
                 raise ValueError(f"{path} needs at least one symbol")
-            if any(not x.replace(".", "").isalnum() or len(x) > 10 for x in items):
+            if any(not x.replace(".", "").replace("/", "").isalnum() or len(x) > 12 for x in items):
                 raise ValueError(f"{path} should be stock symbols separated by commas, like SPY, AAPL")
             return items
         text = str(value).strip()
@@ -136,6 +138,11 @@ class App:
         self.stopping = threading.Event()
         self.market = M.Market(self.data_broker)
         self.update_info = {"available": False}
+        self._store = None
+        self._last_run = {}                      # scheduler: when each job last ran
+        self.crypto_thread = None
+        self.crypto_stop = threading.Event()
+        self.crypto_next = None
         self.updated_files = []                  # files changed by the update installed at startup
 
     # --- helpers ---
@@ -156,6 +163,144 @@ class App:
             return self.broker_factory(s["mode"])
         except SystemExit as e:  # Broker exits with a message when keys are missing
             raise RuntimeError(str(e.code)) from None
+
+    @property
+    def store(self):
+        if self._store is None:
+            self._store = F.Store(self.market.db)
+        return self._store
+
+    def notify(self, title, body, kind="info"):
+        mac = self.settings()["market"].get("mac_notifications", True)
+        self.store.notify(title, body, kind, mac=mac)
+        self.log(f"{title}: {body}")
+
+    def can_trade_unattended(self):
+        """Background jobs (recurring buys, protection) trade on paper, or on live only after LIVE was typed."""
+        return self.settings()["mode"] == "paper" or self.live_ok
+
+    def due(self, job, seconds):
+        if time.time() - self._last_run.get(job, 0) >= seconds:
+            self._last_run[job] = time.time()
+            return True
+        return False
+
+    def tick(self):
+        """One pass of the background jobs. Each job is independent: one failing doesn't stop the others."""
+        s = self.settings()
+        if not T.has_keys(s["mode"]):
+            return
+        jobs = []
+        if self.due("alerts", 20):
+            jobs.append(("alerts", lambda: self.store.check_alerts(self.market.quotes)))
+        if self.can_trade_unattended():
+            b = None
+            if self.due("recurring", 60):
+                jobs.append(("recurring", lambda: F.run_recurring(self.store, self.data_broker(), self.market, s, self.live_ok)))
+            if s["market"]["auto_trailing_stop_pct"] > 0 and self.due("protect", 120):
+                jobs.append(("protection", lambda: F.protect_positions(self.data_broker(), s["market"]["auto_trailing_stop_pct"], self.notify)))
+            if self.due("crypto_protect", 30):
+                jobs.append(("crypto stop-losses", lambda: F.protect_crypto_fills(self.data_broker(), self.store, self.notify)))
+        if self.due("summary", 300):
+            jobs.append(("daily summary", self.maybe_daily_summary))
+        for name, job in jobs:
+            try:
+                job()
+                self.forget()
+            except Exception as e:  # noqa: BLE001 - shown in Activity, retried next pass
+                if self.due(f"err-{name}", 1800):
+                    self.log(f"Background {name} problem: {e}")
+
+    def maybe_daily_summary(self, force=False):
+        now_et = dt.datetime.now(T.ET)
+        if not force and (now_et.weekday() >= 5 or (now_et.hour, now_et.minute) < (16, 5)):
+            return None
+        mode = self.settings()["mode"]
+        day = now_et.date().isoformat()
+        if not force and self.store.q("SELECT 1 FROM summaries WHERE day=? AND mode=?", (day, mode)):
+            return None
+        summary = F.daily_summary(self.data_broker())
+        self.store.x("INSERT OR REPLACE INTO summaries VALUES (?,?,?)", (day, mode, json.dumps(summary)))
+        self.notify("Daily summary", summary["text"], "summary")
+        return summary
+
+    def scheduler_loop(self):
+        while not self.stopping.wait(20):
+            self.tick()
+
+    # --- crypto bot loop (24/7 while the app is open) ---
+    def start_crypto(self):
+        if self.crypto_thread and self.crypto_thread.is_alive():
+            raise ValueError("The crypto bot is already running.")
+        b, s = self.broker(), self.settings()
+        if not T.claude_backend():
+            raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
+        self.crypto_stop.clear()
+        self.crypto_thread = threading.Thread(target=self._crypto_loop, args=(b, s), daemon=True)
+        self.crypto_thread.start()
+        self.log("Crypto bot started. It checks the market every %d minutes while Trader HQ is open." % s["crypto"]["check_every_min"])
+
+    def _crypto_loop(self, b, s):
+        progress = self.set_busy("Crypto")
+        try:
+            while not self.crypto_stop.is_set() and not self.stopping.is_set():
+                try:
+                    self.add_plan(F.CryptoPlan(b, s, self.market, self.store, progress=progress), DAY_TTL)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"Crypto: check skipped: {e}")
+                finally:
+                    self.busy = ""
+                wait = max(5, s["crypto"]["check_every_min"]) * 60
+                self.crypto_next = time.time() + wait
+                self.crypto_stop.wait(wait)
+        finally:
+            self.crypto_next = None
+
+    def stop_crypto(self):
+        self.crypto_stop.set()
+        self.log("Crypto bot stopped. Stop-losses already placed stay with Alpaca.")
+
+    # --- watchlists ---
+    def watchlists(self):
+        lists = self.store.watchlists()
+        syms = sorted({x for l in lists for x in l["symbols"]})
+        quotes = self.market.quotes(syms) if syms else {}
+        return {"lists": lists, "quotes": quotes}
+
+    def watchlist_action(self, body):
+        action = body.get("action")
+        if action == "create":
+            return {"id": self.store.create_list(body.get("name", ""))}
+        lid = int(M.num(body.get("id"), 0))
+        if action == "delete":
+            self.store.delete_list(lid)
+        elif action in ("add", "remove"):
+            sym = self.valid_symbol(body.get("symbol"))
+            self.store.set_watch(lid, sym, action == "add")
+        elif action == "use":
+            target = body.get("target")
+            if target not in ("long_term", "day", "options", "crypto"):
+                raise ValueError("unknown bot")
+            lst = next((l for l in self.store.watchlists() if l["id"] == lid), None)
+            if not lst or not lst["symbols"]:
+                raise ValueError("That watchlist is empty.")
+            crypto = [x for x in lst["symbols"] if M.is_crypto(x)]
+            stocks = [x for x in lst["symbols"] if not M.is_crypto(x)]
+            syms = crypto if target == "crypto" else stocks
+            if not syms:
+                raise ValueError("That list has no " + ("crypto" if target == "crypto" else "stocks or ETFs") + " for this bot.")
+            save_settings({"watchlist": syms} if target == "long_term" else {target: {"watchlist": syms}})
+            self.log(f"The {target.replace('_', '-')} bot now watches: {', '.join(syms)}.")
+        else:
+            raise ValueError("unknown action")
+        return {"ok": True}
+
+    def valid_symbol(self, symbol):
+        sym = str(symbol or "").upper().strip()
+        self.market.ensure_assets()
+        if not self.market.db.asset(sym):
+            raise ValueError(f"{sym or 'That'} isn't a listed stock, ETF or crypto that Alpaca can trade.")
+        return sym
 
     def data_broker(self):
         """For reading prices and company data. Reading moves no money, so live mode doesn't need LIVE typed."""
@@ -184,6 +329,8 @@ class App:
         if s["mode"] == "live" and not spec.get("confirmed"):
             raise ValueError("Live orders need the review step. Press Review first.")
         with self.lock:
+            if body["side"] == "sell" and body.get("order_class") != "oco":
+                T.cancel_protection(b, sym)  # free shares held by a trailing stop or crypto stop-loss
             started = time.perf_counter()
             order = b._api("/v2/orders", method="POST", body=body)
             took = (time.perf_counter() - started) * 1000
@@ -218,6 +365,7 @@ class App:
             raise ValueError("unknown symbol")
         sym = str(symbol).upper().replace("/", "")
         with self.lock:
+            T.cancel_protection(b, str(symbol).upper())
             b._api(f"/v2/positions/{sym}", method="DELETE")
         T.journal("close_position", mode=b.mode, trade={"symbol": symbol, "side": "sell", "qty": "all"})
         self.log(f"Selling all {symbol} at market.")
@@ -280,6 +428,9 @@ class App:
             "auto_approve": T.can_auto_approve(s),
             "plans": self.plans[:8], "proposals": [self.public(p) for p in self.proposals[:40]],
             "activity": self.activity[:60], "day": self.day_info(), "error": None,
+            "notifications": self.store.notifications(15) if T.DATA.exists() else [],
+            "crypto": {"running": bool(self.crypto_thread and self.crypto_thread.is_alive()),
+                       "next_check": self.crypto_next},
             "update": {**self.update_info, "just_updated": len(self.updated_files),
                        "version": (U.installed().get("sha") or "")[:7]},
         }
@@ -316,8 +467,10 @@ class App:
     @staticmethod
     def position_row(p):
         option = T.is_option(p)
-        return {"symbol": p["symbol"], "name": T.describe_option(p["symbol"]) if option else p["symbol"],
-                "kind": "option" if option else "stock", "qty": float(p["qty"]),
+        crypto = p.get("asset_class") == "crypto"
+        name = T.describe_option(p["symbol"]) if option else F.CryptoPlan.slash(p["symbol"]) if crypto else p["symbol"]
+        return {"symbol": p["symbol"], "name": name, "link": None if option else name,
+                "kind": "option" if option else "crypto" if crypto else "stock", "qty": float(p["qty"]),
                 "avg_entry_price": float(p["avg_entry_price"]), "current_price": float(p.get("current_price") or 0),
                 "market_value": float(p["market_value"]), "unrealized_pl": float(p["unrealized_pl"]),
                 "unrealized_plpc": float(p["unrealized_plpc"]) * 100}
@@ -353,7 +506,12 @@ class App:
         for i, t in enumerate(plan.trades, 1):
             with self.lock:
                 ok, why, o = plan.check(t)
-                p = {"id": uuid.uuid4().hex[:10], "plan_id": entry["id"], "index": i, "kind": plan.kind,
+                warning = ""
+                if plan.kind in ("run", "day") and t.get("side") == "buy":
+                    soon = F.earnings_soon(self.market, t.get("symbol", ""))
+                    if soon:
+                        warning = f"Earnings report on {soon}: prices often jump or drop sharply around earnings."
+                p = {"id": uuid.uuid4().hex[:10], "plan_id": entry["id"], "index": i, "kind": plan.kind, "warning": warning,
                      "label": plan.label, "headline": plan.headline(t, o), "reason": t.get("reason", ""),
                      "risk": t.get("risk", ""), "question": plan.question(t, o) if ok else "",
                      "status": "pending" if ok else "blocked", "why": "" if ok else why,
@@ -416,7 +574,7 @@ class App:
                 p["status"], p["result"] = "expired", "Too old: prices have moved. Ask Claude again."
 
     def start_plan(self, kind):
-        if kind not in ("run", "options"):
+        if kind not in ("run", "options", "crypto"):
             raise ValueError("unknown plan")
         if self.busy:
             raise ValueError(f"Busy: {self.busy}")
@@ -426,12 +584,15 @@ class App:
             raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once), "
                              "or add an Anthropic API key in Settings.")
         self.cache.pop("claude", None)
-        label = "Long-term" if kind == "run" else "Options"
+        label = {"run": "Long-term", "options": "Options", "crypto": "Crypto"}[kind]
         self.busy = f"{label}: asking Claude for a plan..."
 
         def work():
             try:
-                plan = (T.LongTermPlan if kind == "run" else T.OptionsPlan)(b, s, progress=self.set_busy(label))
+                if kind == "crypto":
+                    plan = F.CryptoPlan(b, s, self.market, self.store, progress=self.set_busy(label))
+                else:
+                    plan = (T.LongTermPlan if kind == "run" else T.OptionsPlan)(b, s, progress=self.set_busy(label))
                 self.add_plan(plan, PLAN_TTL)
             except T.Notice as e:
                 self.log(f"{label}: {e}")
@@ -556,10 +717,12 @@ def make_handler(app, shutdown):
             port = self.server.server_address[1]
             return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
 
-        def _send(self, code, body, ctype="application/json"):
-            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        def _send(self, code, body, ctype="application/json", filename=None):
+            data = body if isinstance(body, bytes) else json.dumps(body, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            if filename:
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(len(data)))
@@ -603,6 +766,47 @@ def make_handler(app, shutdown):
                     return self._send(200, mk.most_actives("trades" if params.get("by") == "trades" else "volume"))
                 if path == "/api/orders/recent":
                     return self._send(200, {"rows": app.recent_orders()})
+                if path == "/api/watchlists":
+                    return self._send(200, app.watchlists())
+                if path == "/api/alerts":
+                    return self._send(200, {"rows": app.store.alerts()})
+                if path == "/api/recurring":
+                    return self._send(200, {"rows": app.store.recurring(), "mode": app.settings()["mode"]})
+                if path == "/api/notifications":
+                    return self._send(200, {"rows": app.store.notifications(100)})
+                if path == "/api/reports/performance":
+                    return self._send(200, F.performance(app.data_broker(), app.market, params.get("period", "3M")))
+                if path == "/api/reports/tax":
+                    year = int(params.get("year") or dt.date.today().year)
+                    report = F.tax_report(app.data_broker(), year)
+                    if params.get("format") == "csv":
+                        return self._send(200, F.tax_csv(report).encode(), "text/csv; charset=utf-8",
+                                          filename=f"trader-hq-gains-{year}.csv")
+                    return self._send(200, report)
+                if path == "/api/reports/summaries":
+                    rows = app.store.q("SELECT json FROM summaries WHERE mode=? ORDER BY day DESC LIMIT 30",
+                                       (app.settings()["mode"],))
+                    return self._send(200, {"rows": [json.loads(r[0]) for r in rows]})
+                if path == "/api/calendar":
+                    b = app.data_broker()
+                    held = [F.CryptoPlan.slash(p["symbol"]) if p.get("asset_class") == "crypto" else p["symbol"]
+                            for p in b.positions() if p.get("asset_class") != "us_option"]
+                    syms = sorted(set(held) | set(app.store.watched_symbols()))
+                    has_key = bool(T.load_config() or os.environ.get("FINNHUB_API_KEY"))
+                    return self._send(200, {"rows": F.calendar(app.market, syms), "has_finnhub": has_key, "symbols": len(syms)})
+                if path == "/api/market/events":
+                    sym = app.valid_symbol(params.get("symbol"))
+                    out = {"earnings": None, "dividends": []}
+                    try:
+                        out["earnings"] = F.earnings(app.market, sym)
+                    except RuntimeError:
+                        pass
+                    if not M.is_crypto(sym):
+                        try:
+                            out["dividends"] = F.dividends(app.market, sym)
+                        except RuntimeError:
+                            pass
+                    return self._send(200, out)
                 if path == "/api/ping":
                     return self._send(200, {"ok": True})
                 if path == "/api/state":
@@ -651,9 +855,46 @@ def make_handler(app, shutdown):
                     app.save_keys(body.get("mode"), str(body.get("key", "")), str(body.get("secret", "")))
                 elif path == "/api/anthropic-key":
                     app.save_anthropic_key(str(body.get("key", "")))
+                elif path == "/api/watchlists":
+                    return self._send(200, app.watchlist_action(body))
+                elif path == "/api/alerts":
+                    if body.get("action") == "delete":
+                        app.store.delete_alert(int(M.num(body.get("id"), 0)))
+                    else:
+                        app.store.add_alert(app.valid_symbol(body.get("symbol")), body.get("kind"), body.get("value"), body.get("note", ""))
+                        app.log(f"Alert set on {body.get('symbol', '').upper()}.")
+                elif path == "/api/recurring":
+                    action = body.get("action", "add")
+                    rid = int(M.num(body.get("id"), 0))
+                    if action == "add":
+                        mode = app.settings()["mode"]
+                        if mode == "live" and not app.live_ok:
+                            raise NeedLive("Type LIVE to confirm real-money trading first.")
+                        sym = app.valid_symbol(body.get("symbol"))
+                        app.store.add_recurring(sym, body.get("amount"), body.get("frequency"), body.get("day"), mode)
+                        app.log(f"Recurring buy of {sym} set up.")
+                    elif action in ("pause", "resume"):
+                        app.store.set_recurring_active(rid, action == "resume")
+                    elif action == "delete":
+                        app.store.delete_recurring(rid)
+                    else:
+                        raise ValueError("unknown action")
+                elif path == "/api/reports/summary-now":
+                    return self._send(200, app.maybe_daily_summary(force=True))
+                elif path == "/api/market/explain":
+                    sym = app.valid_symbol(body.get("symbol"))
+                    info = app.market.info(sym)
+                    held = next((app.position_row(p) for p in app.data_broker().positions()
+                                 if p["symbol"] in (sym, sym.replace("/", ""))), None)
+                    return self._send(200, F.explain(app.market, info, held))
+                elif path == "/api/crypto/start":
+                    app.start_crypto()
+                elif path == "/api/crypto/stop":
+                    app.stop_crypto()
                 elif path == "/api/market/scan":
-                    return self._send(200, app.market.scan(body.get("kind", "stock"), body.get("filters") or {},
-                                                           str(body.get("sort", "change_pct"))))
+                    kind = body.get("kind", "stock")
+                    return self._send(200, app.market.scan(kind, body.get("filters") or {}, str(body.get("sort", "change_pct")),
+                                                           symbols=app.store.watched_symbols() if kind == "watchlist" else None))
                 elif path == "/api/orders/preview":
                     return self._send(200, app.manual_order(body.get("order") or {}, place=False))
                 elif path == "/api/orders":
@@ -725,6 +966,7 @@ def serve(open_win=True, port=PORT):
         app.updated_files = ["x"] * int(os.environ.pop("TRADERHQ_JUST_UPDATED") or 0)
         app.log("Trader HQ was updated to the latest version.")
     threading.Thread(target=app.update_loop, daemon=True).start()
+    threading.Thread(target=app.scheduler_loop, daemon=True).start()
     print(f"Trader HQ dashboard: {url}  (press Quit in the dashboard, or Ctrl+C here, to stop)")
     if open_win:
         threading.Timer(0.5, open_window, args=(url,)).start()

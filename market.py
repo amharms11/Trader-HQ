@@ -41,6 +41,8 @@ RANGES = {
     "1Y": ("1Day", dt.timedelta(days=366)),
     "5Y": ("1Week", dt.timedelta(days=5 * 366)),
     "ALL": ("1Month", dt.timedelta(days=40 * 366)),
+    "BT5Y": ("1Day", dt.timedelta(days=5 * 366)),     # daily bars for backtests
+    "BTALL": ("1Day", dt.timedelta(days=40 * 366)),
 }
 ORDER_TYPES = ("market", "limit", "stop", "stop_limit", "trailing_stop")
 ORDER_CLASSES = ("simple", "bracket", "oco", "oto")
@@ -473,17 +475,22 @@ class Market:
         res = self.data("/v1beta1/screener/stocks/most-actives", {"by": by, "top": top}) or {}
         return {"rows": res.get("most_actives") or [], "updated": res.get("last_updated")}
 
-    def scan(self, kind, filters, sort="change_pct", limit=100):
-        """Check every listed stock (or ETF) against the filters, using one snapshot per symbol."""
-        if kind not in ("stock", "etf", "crypto"):
+    def scan(self, kind, filters, sort="change_pct", limit=100, symbols=None):
+        """Check every listed stock (or ETF, crypto, or the given watchlist symbols) against the filters."""
+        if kind not in ("stock", "etf", "crypto", "watchlist"):
             raise ValueError("unknown list")
         self.ensure_assets()
-        with self.scan_lock:
-            key = f"scan:{kind}:{self.feed()}"
-            quotes = self.db.get(key, 60)
-            if quotes is None:
-                quotes = self.quotes(self.db.symbols(kind))
-                self.db.put(key, quotes)
+        if kind == "watchlist":
+            if not symbols:
+                raise ValueError("Your watchlists are empty. Star some symbols first.")
+            quotes = self.quotes(list(symbols))
+        else:
+            with self.scan_lock:
+                key = f"scan:{kind}:{self.feed()}"
+                quotes = self.db.get(key, 60)
+                if quotes is None:
+                    quotes = self.quotes(self.db.symbols(kind))
+                    self.db.put(key, quotes)
         f = {k: num(v) for k, v in (filters or {}).items() if num(v) is not None}
         rows = []
         for sym, q in quotes.items():

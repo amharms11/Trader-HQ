@@ -190,6 +190,16 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .chip:hover { border-color: var(--accent); }
 .two-eq { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .two-eq h3 { margin: 0 0 6px; font-size: 14px; }
+.row select { width: auto; }
+.sym-extras { display: grid; gap: 16px; }
+.sym-extras .form { gap: 8px; }
+.explain p { line-height: 1.6; margin: 8px 0; }
+.perf-chart { height: 280px; margin: 6px 0 12px; }
+.legend { gap: 16px; font-size: 13px; color: var(--ink-2); margin-top: 12px; }
+.summary { border-bottom: 1px solid var(--border); padding: 10px 0; }
+.summary p { margin: 4px 0; }
+.compare-row { margin-top: 10px; }
+button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 1100px) { .sym-grid { grid-template-columns: minmax(0, 1fr); } .sym-side { position: static; } .search input { width: 180px; } }
 @media (max-width: 900px) {
   .two-eq { grid-template-columns: minmax(0, 1fr); }
@@ -209,7 +219,7 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
   <span id="modePill" class="pill"><span class="dot"></span><span>…</span></span>
   <span id="marketPill" class="pill"><span class="dot"></span><span>…</span></span>
   <nav id="nav" aria-label="Sections">
-    <a href="#bot" data-view="bot">Bot</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a>
+    <a href="#bot" data-view="bot">Bot</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a><a href="#reports" data-view="reports">Reports</a><a href="#tools" data-view="tools">Tools</a>
   </nav>
   <div class="search"><input type="search" id="symSearch" placeholder="Search symbol or company" autocomplete="off" aria-label="Search symbol or company"><div id="symResults" class="sr-list" hidden></div></div>
   <div id="busy" class="busy" hidden><div class="spinner" aria-hidden="true"></div><span></span></div>
@@ -289,8 +299,19 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
             <button class="btn danger" type="button" id="flatten">Close day trades now</button>
           </div>
         </div>
+        <div class="action">
+          <h3>Crypto (24/7)</h3>
+          <p id="cryptoText">Claude watches your crypto list and suggests small buys with a stop-loss, or sells.</p>
+          <div class="row">
+            <button class="btn primary" type="button" data-plan="crypto">Ask Claude about crypto</button>
+            <button class="btn" type="button" id="cryptoStart">Start crypto bot</button>
+            <button class="btn" type="button" id="cryptoStop" hidden>Stop crypto bot</button>
+          </div>
+        </div>
       </section>
     </div>
+
+    <section class="card" id="watchCard"></section>
 
     <section class="card" aria-live="polite">
       <div class="row"><h2 style="margin:0;flex:1">Claude's suggestions</h2><span id="autoNote" class="tag" hidden>Auto-approve on (paper)</span></div>
@@ -314,6 +335,8 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
   <div id="view-markets" class="view" hidden></div>
   <div id="view-scanner" class="view" hidden></div>
   <div id="view-orders" class="view" hidden></div>
+  <div id="view-reports" class="view" hidden></div>
+  <div id="view-tools" class="view" hidden></div>
   <div id="view-symbol" class="view" hidden></div>
 </main>
 
@@ -527,9 +550,9 @@ function renderPositions() {
     el("thead", {}, el("tr", {}, el("th", {}, "Holding"), el("th", {class: "num"}, "Qty"), el("th", {class: "num"}, "Avg cost"),
       el("th", {class: "num"}, "Price"), el("th", {class: "num"}, "Value"), el("th", {class: "num"}, "Profit / loss"))),
     el("tbody", {}, rows.map((p) => el("tr", {},
-      el("td", {}, p.kind === "stock" && /^[A-Z.]{1,10}$/.test(p.symbol) ? el("a", {href: "#s/" + encodeURIComponent(p.symbol)}, p.name) : p.name,
+      el("td", {}, p.link ? el("a", {href: "#s/" + encodeURIComponent(p.link)}, p.name) : p.name,
         p.kind === "option" ? el("span", {class: "tag", style: "margin-left:6px"}, "option") : null),
-      el("td", {class: "num"}, p.qty + (p.kind === "option" ? " ct" : " sh")),
+      el("td", {class: "num"}, p.qty + ({option: " ct", crypto: ""}[p.kind] ?? " sh")),
       el("td", {class: "num"}, money(p.avg_entry_price)), el("td", {class: "num"}, money(p.current_price)),
       el("td", {class: "num"}, money(p.market_value)),
       el("td", {class: "num " + (p.unrealized_pl > 0 ? "up" : p.unrealized_pl < 0 ? "down" : "")},
@@ -571,6 +594,7 @@ function niceTicks(min, max, n) {
 }
 function drawChart() {
   const svg = $("chart"), wrap = $("chartWrap"), W = wrap.clientWidth, H = wrap.clientHeight;
+  if (W < 120 || H < 80) return;  // hidden (another tab is open); drawn again when the Bot tab shows
   svg.setAttribute("viewBox", "0 0 " + W + " " + H); svg.replaceChildren();
   const ns = "http://www.w3.org/2000/svg", mk = (t, a) => { const n = document.createElementNS(ns, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
   const table = $("chartTable");
@@ -639,6 +663,14 @@ const LABELS = {
   min_days_to_expiry: ["Minimum days to expiry", ""], max_days_to_expiry: ["Maximum days to expiry", ""],
   close_days_before_expiry: ["Offer to sell this many days before expiry", ""],
   max_spread_pct: ["Skip contracts with a bid/ask gap over (%)", ""],
+  auto_trailing_stop_pct: ["Automatic trailing stop on every stock (%)", "0 = off. Also on the Tools page."],
+  mac_notifications: ["Mac notifications", "Alerts, recurring buys and daily summaries pop up on your Mac."],
+  "crypto.watchlist": ["Crypto watchlist", "Coins the crypto bot may buy, like BTC/USD, ETH/USD."],
+  "crypto.strategy": ["Crypto strategy", "Your instructions to Claude for crypto, in plain English."],
+  "crypto.check_every_min": ["Check every (minutes)", "While the crypto bot is running."],
+  "crypto.max_order_usd": ["Largest crypto buy ($)", ""],
+  "crypto.max_position_pct": ["Max size of one coin (% of account)", ""],
+  "crypto.max_stop_loss_pct": ["Widest crypto stop-loss (%)", "Every crypto-bot buy gets a stop-loss after it fills."],
   data_feed: ["Price data feed", "IEX is free and real-time for one exchange. SIP covers all exchanges and needs a paid Alpaca data plan."],
   max_manual_order_usd: ["Largest buy you place yourself ($)", "For the order ticket on stock and crypto pages."],
   confirm_manual_orders: ["Review step before sending orders", "Turn off for one-click orders on paper. Always on in live mode."],
@@ -648,7 +680,7 @@ const LABELS = {
   "options.watchlist": ["Options watchlist", "Stocks/ETFs whose calls and puts may be bought."],
   "options.strategy": ["Options strategy", "Your instructions to Claude for calls and puts, in plain English."],
 };
-const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"], ["Markets & order ticket", "market"]];
+const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"], ["Crypto bot", "crypto"], ["Markets & order ticket", "market"]];
 function field(name, def, val, section) {
   const [label, help] = LABELS[(section ? section + "." : "") + name] || LABELS[name] || [name, ""];
   const lab = (input) => el("label", {}, label, help ? el("small", {}, help) : null, input);
@@ -766,6 +798,7 @@ $("periods").onclick = (e) => {
   loadChart();
 };
 window.addEventListener("resize", () => drawChart());
+window.addEventListener("hashchange", () => { if (!location.hash || location.hash === "#bot") setTimeout(drawChart, 0); });
 
 refresh().then(loadChart);
 setInterval(refresh, 4000);
@@ -774,5 +807,6 @@ setInterval(loadChart, 120000);
 </script>
 <script src="/vendor/lightweight-charts.js"></script>
 <script src="/market.js"></script>
+<script src="/features.js"></script>
 </body>
 </html>
