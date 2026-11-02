@@ -193,6 +193,12 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .two-eq h3 { margin: 0 0 6px; font-size: 14px; }
 .row select { width: auto; }
 .sym-extras { display: grid; gap: 16px; }
+.live-bots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+.live-bot { display: grid; gap: 6px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--raised); }
+.live-chart { height: 420px; margin-top: 6px; }
+.live-feed { max-height: 470px; }
+.feed-trade { font-weight: 600; } .feed-warn { color: var(--down); }
+.chip.on { border-color: var(--accent); color: var(--accent); }
 .sym-extras .form { gap: 8px; }
 .explain p { line-height: 1.6; margin: 8px 0; }
 .perf-chart { height: 280px; margin: 6px 0 12px; }
@@ -220,7 +226,7 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
   <span id="modePill" class="pill"><span class="dot"></span><span>…</span></span>
   <span id="marketPill" class="pill"><span class="dot"></span><span>…</span></span>
   <nav id="nav" aria-label="Sections">
-    <a href="#bot" data-view="bot">Bot</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a><a href="#reports" data-view="reports">Reports</a><a href="#tools" data-view="tools">Tools</a>
+    <a href="#bot" data-view="bot">Bot</a><a href="#live" data-view="live">Live</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a><a href="#reports" data-view="reports">Reports</a><a href="#tools" data-view="tools">Tools</a>
   </nav>
   <div class="search"><input type="search" id="symSearch" placeholder="Search symbol or company" autocomplete="off" aria-label="Search symbol or company"><div id="symResults" class="sr-list" hidden></div></div>
   <div id="busy" class="busy" hidden><div class="spinner" aria-hidden="true"></div><span></span></div>
@@ -333,6 +339,7 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
     </section>
   </div>
   </div>
+  <div id="view-live" class="view" hidden></div>
   <div id="view-markets" class="view" hidden></div>
   <div id="view-scanner" class="view" hidden></div>
   <div id="view-orders" class="view" hidden></div>

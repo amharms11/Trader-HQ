@@ -108,6 +108,16 @@ The dashboard is also a stock, ETF and crypto research tool. Use the tabs at the
 
 Charts use [TradingView Lightweight Charts™](https://www.tradingview.com/) (Apache 2.0, see `vendor/`).
 
+## Live: watch the bot trade
+The **Live** tab is for watching the bot work:
+- **Start/stop controls** at the top for day trading and the crypto bot, with a countdown to the next check.
+- **Waiting for your approval:** the bot's suggestions, with Approve and Skip buttons.
+- **A live chart** of the stock it's trading (today's 5-minute candles, updating every 2 seconds). It shows **▲ buy** and **▼ sell** markers where the bot traded, and lines for the **stop-loss**, **target** and **your entry**. Click a holding or a symbol chip to switch.
+- **Live feed:** each check, Claude's reasoning, and every order as it happens.
+- **Open trades** with live profit or loss and how far each is from its stop and target, plus **today's scoreboard**.
+
+To let it trade on its own while you watch (paper only), turn on **Auto-approve** in Settings.
+
 ## Watchlists, alerts, recurring buys, reports and tools
 - **Watchlists** (Bot page): keep lists of stocks, ETFs and crypto with live prices. Star any symbol with **☆ Watch** on its page. One click lets the long-term, day-trading, options or crypto bot watch a list, and the Scanner can scan your watchlists.
 - **Price alerts** (Tools page or any symbol page): for example "AAPL below $180" or "BTC moves 5% today". Checked every 20 seconds while Trader HQ is open, with a Mac notification.

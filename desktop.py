@@ -303,6 +303,50 @@ class App:
             raise ValueError(f"{sym or 'That'} isn't a listed stock, ETF or crypto that Alpaca can trade.")
         return sym
 
+    def live_view(self, symbol=""):
+        """Everything the Live tab shows: today's bot fills and exits for one symbol, open trades with their
+        stops and targets, and today's scoreboard."""
+        b = self.data_broker()
+        norm = lambda x: str(x or "").upper().replace("/", "")
+        fills = self.cached("fills", 5, lambda: F.fetch_fills(b, max_pages=2))
+        positions = self.cached("positions", 4, b.positions)
+        orders = self.cached("orders", 4, b.open_orders)
+        today = F.today_et()
+        on_day = lambda iso: dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET).date() == today
+        today_fills = [f for f in fills if on_day(f["time"])]
+        trades, _ = F.match_trades(fills)
+        closed = [t for t in trades if on_day(t["closed"])]
+        rows = []
+        for p in positions:
+            if T.is_option(p):
+                continue
+            row = self.position_row(p)
+            exits = [o for o in orders if norm(o.get("symbol")) == norm(p["symbol"]) and o.get("side") == "sell"]
+            stops = [M.num(o.get("stop_price")) for o in exits if o.get("type") in ("stop", "stop_limit", "trailing_stop")]
+            targets = [M.num(o.get("limit_price")) for o in exits if o.get("type") == "limit"]
+            price = row["current_price"]
+            row["stop"] = max([x for x in stops if x], default=None)
+            row["target"] = min([x for x in targets if x], default=None)
+            row["to_stop_pct"] = (row["stop"] / price - 1) * 100 if row["stop"] and price else None
+            row["to_target_pct"] = (row["target"] / price - 1) * 100 if row["target"] and price else None
+            rows.append(row)
+        symbols = []
+        for x in [r["link"] for r in rows] + [F.CryptoPlan.slash(f["symbol"]) if f["asset_class"] == "crypto" else f["symbol"]
+                                            for f in reversed(today_fills) if f["asset_class"] != "us_option"] + self.settings()["day"]["watchlist"]:
+            if x and x not in symbols:
+                symbols.append(x)
+        sym = (symbol or "").upper() or (symbols[0] if symbols else "SPY")
+        return {
+            "symbol": sym, "symbols": symbols[:12], "positions": rows,
+            "fills": [f for f in today_fills if norm(f["symbol"]) == norm(sym)],
+            "orders": [{"type": o.get("type"), "side": o.get("side"), "qty": o.get("qty"), "stop_price": M.num(o.get("stop_price")),
+                        "limit_price": M.num(o.get("limit_price")), "status": o.get("status")}
+                       for o in orders if norm(o.get("symbol")) == norm(sym)],
+            "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
+                      "losses": sum(1 for t in closed if t["pnl"] < 0), "realized": sum(t["pnl"] for t in closed),
+                      "unrealized": sum(r["unrealized_pl"] for r in rows), "fills": len(today_fills)},
+        }
+
     def data_broker(self):
         """For reading prices and company data. Reading moves no money, so live mode doesn't need LIVE typed."""
         s = self.settings()
@@ -523,8 +567,14 @@ class App:
                 elif T.can_auto_approve(s):
                     self._place(p, auto=True)
         del self.proposals[100:]
+        if plan.outlook:
+            self.log(f"{plan.label}: Claude's view: {plan.outlook}")
         if not plan.trades:
             self.log(f"{plan.label}: {plan.empty_message}")
+        else:
+            waiting = sum(1 for p in self.proposals if p["plan_id"] == entry["id"] and p["status"] == "pending")
+            if waiting:
+                self.log(f"{plan.label}: {waiting} suggestion(s) waiting for your approval.")
         return entry
 
     def decide(self, proposal_id, approve):
@@ -765,6 +815,8 @@ def make_handler(app, shutdown, restart=lambda: None):
                     return self._send(200, mk.movers("crypto" if params.get("market") == "crypto" else "stocks"))
                 if path == "/api/market/actives":
                     return self._send(200, mk.most_actives("trades" if params.get("by") == "trades" else "volume"))
+                if path == "/api/live":
+                    return self._send(200, app.live_view(params.get("symbol", "")))
                 if path == "/api/orders/recent":
                     return self._send(200, {"rows": app.recent_orders()})
                 if path == "/api/watchlists":

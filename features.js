@@ -2,6 +2,8 @@
 // Uses helpers from dashboard.html and market.js (el, api, toast, money, pct, fmtPrice, fmtBig, chg, go, enc, MK, ...).
 "use strict";
 const FX = window.FX = {};
+// The dashboard keeps its latest state in a top-level variable S (not on window), shared by name across scripts.
+const ST = () => (typeof S !== "undefined" ? S : null);
 const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 const fmtDate = (t) => new Date(t * 1000).toLocaleDateString([], {month: "short", day: "numeric", year: "numeric"});
 const pctOrDash = (x) => x === null || x === undefined ? "–" : pct(x);
@@ -48,7 +50,7 @@ async function renderWatchCard() {
         el("button", {class: "btn small", type: "button", onclick: () => post("/api/watchlists", {action: "use", id: list.id, target: t}, `The ${l.toLowerCase()} bot will watch this list.`)}, l))) : null);
 }
 function cryptoStatus() {
-  if (!window.S || !S.crypto) return;
+  if (!ST() || !S.crypto) return;
   const c = S.crypto, start = document.getElementById("cryptoStart"), stop = document.getElementById("cryptoStop"), text = document.getElementById("cryptoText");
   if (!start) return;
   start.hidden = c.running; stop.hidden = !c.running;
@@ -59,7 +61,7 @@ function cryptoStatus() {
 }
 let lastNote = null;
 function watchNotifications() {
-  if (!window.S || !S.notifications || !S.notifications.length) return;
+  if (!ST() || !S.notifications || !S.notifications.length) return;
   const top = S.notifications[0];
   if (lastNote === null) { lastNote = top.id; return; }
   if (top.id > lastNote) {
@@ -439,4 +441,158 @@ setInterval(() => { cryptoStatus(); watchNotifications(); }, 1000);
 setInterval(() => { if (MK.view === "bot") renderWatchCard(); }, 15000);
 window.addEventListener("hashchange", () => { if (MK.view === "bot") renderWatchCard(); });
 renderWatchCard();
+
+// ---------- Live view: watch the bot trade ----------
+const LIVE = {symbol: "", chart: null, series: null, bars: [], lines: [], data: null, timers: false, barSec: 300};
+FX.renderLive = function () {
+  const root = document.getElementById("view-live");
+  if (!root.dataset.built) {
+    root.dataset.built = "1";
+    root.append(
+      el("section", {class: "card live-controls"},
+        el("div", {class: "row", style: "justify-content:space-between"},
+          el("h2", {style: "margin:0"}, "Live"),
+          el("span", {id: "liveBusy", class: "pill"}, el("span", {class: "dot"}), el("span", {}, "Idle"))),
+        el("div", {class: "live-bots"},
+          el("div", {class: "live-bot"}, el("b", {}, "Day trading"), el("span", {id: "liveDayText", class: "hint", style: "margin:0"}),
+            el("div", {class: "row"},
+              el("button", {class: "btn primary", type: "button", id: "liveDayStart", onclick: () => post("/api/day/start", {}, "Day trading started.").then(liveTick).catch(() => {})}, "Start day trading"),
+              el("button", {class: "btn danger", type: "button", id: "liveDayStop", hidden: true, onclick: () => post("/api/day/stop", {}, "Day trading stopped.").then(liveTick).catch(() => {})}, "Stop day trading"),
+              el("button", {class: "btn", type: "button", onclick: () => confirm("Sell everything day trading bought today, at market price, now?") && post("/api/flatten", {}, "Closing day trades.").then(liveTick).catch(() => {})}, "Close day trades now"))),
+          el("div", {class: "live-bot"}, el("b", {}, "Crypto bot (24/7)"), el("span", {id: "liveCryptoText", class: "hint", style: "margin:0"}),
+            el("div", {class: "row"},
+              el("button", {class: "btn primary", type: "button", id: "liveCryptoStart", onclick: () => post("/api/crypto/start", {}, "Crypto bot started.").then(liveTick).catch(() => {})}, "Start crypto bot"),
+              el("button", {class: "btn danger", type: "button", id: "liveCryptoStop", hidden: true, onclick: () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(liveTick).catch(() => {})}, "Stop crypto bot")))),
+        el("p", {id: "liveApproveNote", class: "hint", style: "margin:10px 0 0"})),
+      el("section", {class: "card", id: "livePending", hidden: true}, el("h2", {}, "Waiting for your approval"), el("div", {class: "proposals", id: "livePendingList"})),
+      el("div", {class: "two"},
+        el("section", {class: "card"},
+          el("div", {class: "row", style: "justify-content:space-between"}, el("h2", {style: "margin:0"}, el("span", {id: "liveSym"}, ""), " ", el("span", {id: "livePrice", class: "muted"})),
+            el("div", {id: "liveChips", class: "row", style: "gap:6px"})),
+          el("div", {class: "row legend"},
+            el("span", {}, el("b", {class: "up"}, "▲"), " Bot bought"), el("span", {}, el("b", {class: "down"}, "▼"), " Bot sold"),
+            el("span", {}, lineKey("#d03b3b"), "Stop-loss"), el("span", {}, lineKey("#0ca30c"), "Target"), el("span", {}, lineKey("#898781"), "Your entry")),
+          el("div", {id: "liveChart", class: "live-chart"}),
+          el("p", {class: "hint", id: "liveChartNote"}, "Today's 5-minute candles. Updates every 2 seconds while the market is open (crypto any time).")),
+        el("section", {class: "card"}, el("h2", {}, "Live feed"), el("div", {id: "liveFeed", class: "log live-feed"}))),
+      el("div", {class: "two"},
+        el("section", {class: "card"}, el("h2", {}, "Open trades"), el("div", {id: "livePositions", class: "scroll"})),
+        el("section", {class: "card"}, el("h2", {}, "Today's scoreboard"), el("div", {id: "liveScore", class: "stats", style: "grid-template-columns:1fr 1fr"}))));
+  }
+  if (!LIVE.timers) {
+    LIVE.timers = true;
+    setInterval(() => { if (MK.view === "live") liveControls(); }, 1000);
+    setInterval(() => { if (MK.view === "live") liveTick(); }, 5000);
+    setInterval(() => { if (MK.view === "live") livePrice(); }, 2000);
+    setInterval(() => { if (MK.view === "live") liveBars(); }, 60000);
+  }
+  liveControls(); liveTick(true);
+};
+function liveControls() {
+  if (!ST()) return;
+  const d = S.day || {}, c = S.crypto || {}, now = Date.now() / 1000;
+  const cd = (t) => t ? (() => { const s = Math.max(0, Math.round(t - now)); return `next check in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; })() : "checking now";
+  document.getElementById("liveDayStart").hidden = d.running; document.getElementById("liveDayStop").hidden = !d.running;
+  document.getElementById("liveCryptoStart").hidden = c.running; document.getElementById("liveCryptoStop").hidden = !c.running;
+  document.getElementById("liveDayText").textContent = d.running ? `Running, ${cd(d.next_check)}. ${d.entries_today} trade(s) opened today.` : d.flattened ? "Finished for today." : "Stopped.";
+  document.getElementById("liveCryptoText").textContent = c.running ? `Running, ${cd(c.next_check)}.` : "Stopped.";
+  const busy = document.getElementById("liveBusy");
+  busy.className = "pill " + (S.busy ? "open" : d.running || c.running ? "open" : "");
+  busy.lastChild.textContent = S.busy || (d.running || c.running ? "Watching the market" : "Idle");
+  document.getElementById("liveApproveNote").textContent = S.auto_approve
+    ? "Auto-approve is on (paper): trades that pass every limit are placed without asking."
+    : "Each trade waits for your Approve below. Turn on auto-approve in Settings (paper only) to let it trade on its own while you watch.";
+  const pending = (S.proposals || []).filter((p) => p.status === "pending");
+  document.getElementById("livePending").hidden = !pending.length;
+  document.getElementById("livePendingList").replaceChildren(...pending.map((p) => propCard(p, now)));
+  const feed = document.getElementById("liveFeed"), rows = S.activity || [];
+  if (feed.dataset.top !== (rows[0] ? rows[0].time + rows[0].text : "")) {
+    feed.dataset.top = rows[0] ? rows[0].time + rows[0].text : "";
+    feed.replaceChildren(...(rows.length ? rows.map((a) => el("div", {class: /order sent|Bought|Sold|placed/i.test(a.text) ? "feed-trade" : /fail|couldn't|skipped|problem/i.test(a.text) ? "feed-warn" : ""}, el("time", {}, a.time), a.text))
+      : [el("div", {class: "empty"}, "Nothing yet. Start a bot above and its checks, Claude's reasoning and every order show up here.")]));
+  }
+}
+async function liveTick(first) {
+  let d;
+  try { d = await api("/api/live?symbol=" + enc(LIVE.symbol)); } catch (e) { document.getElementById("liveChartNote").textContent = e.message; return; }
+  LIVE.data = d;
+  const changed = d.symbol !== LIVE.symbol;
+  LIVE.symbol = d.symbol;
+  document.getElementById("liveSym").replaceChildren(el("a", {href: "#s/" + enc(d.symbol)}, d.symbol));
+  document.getElementById("liveChips").replaceChildren(...d.symbols.map((s) => el("button", {type: "button", class: "chip" + (s === d.symbol ? " on" : ""), onclick: () => { LIVE.symbol = s; liveTick(true); }}, s)));
+  if (first || changed) await liveBars();
+  else liveMarks();
+  const pos = d.positions;
+  document.getElementById("livePositions").replaceChildren(pos.length ? el("table", {class: "click"},
+    el("thead", {}, el("tr", {}, ["Holding", "Qty", "Entry", "Now", "Profit / loss", "Stop", "Target"].map((h, i) => el("th", {class: i ? "num" : ""}, h)))),
+    el("tbody", {}, pos.map((p) => el("tr", {tabindex: 0, onclick: () => { LIVE.symbol = p.link; liveTick(true); }},
+      el("td", {}, el("b", {}, p.name)), el("td", {class: "num"}, String(p.qty)), el("td", {class: "num"}, fmtPrice(p.avg_entry_price)), el("td", {class: "num"}, fmtPrice(p.current_price)),
+      el("td", {class: "num " + tone(p.unrealized_pl)}, signed(p.unrealized_pl) + " (" + pct(p.unrealized_plpc) + ")"),
+      el("td", {class: "num"}, p.stop ? fmtPrice(p.stop) + ` (${pct(p.to_stop_pct)})` : "–"),
+      el("td", {class: "num"}, p.target ? fmtPrice(p.target) + ` (${pct(p.to_target_pct)})` : "–")))))
+    : el("div", {class: "empty"}, "No open positions."));
+  const sc = d.score, stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
+  document.getElementById("liveScore").replaceChildren(
+    stat("Realized today", signed(sc.realized), tone(sc.realized)), stat("Open profit / loss", signed(sc.unrealized), tone(sc.unrealized)),
+    stat("Closed trades", String(sc.closed)), stat("Wins / losses", `${sc.wins} / ${sc.losses}`), stat("Fills today", String(sc.fills)),
+    stat("Account today", ST() && S.account ? signed(S.account.equity - S.account.last_equity) : "–", ST() && S.account ? tone(S.account.equity - S.account.last_equity) : ""));
+}
+async function liveBars() {
+  const sym = LIVE.symbol; if (!sym) return;
+  let r;
+  try { r = await api(`/api/market/bars?symbol=${enc(sym)}&range=1D`); } catch (e) { document.getElementById("liveChartNote").textContent = e.message; return; }
+  if (sym !== LIVE.symbol) return;
+  LIVE.bars = r.bars;
+  const box = document.getElementById("liveChart");
+  if (LIVE.chart) { LIVE.chart.remove(); LIVE.chart = null; }
+  if (!window.LightweightCharts) return;
+  LIVE.chart = LightweightCharts.createChart(box, chartOptions(420, true));
+  LIVE.series = LIVE.chart.addCandlestickSeries({upColor: UP(), downColor: DOWN(), wickUpColor: UP(), wickDownColor: DOWN(), borderVisible: false});
+  LIVE.series.setData(LIVE.bars.map((b) => ({time: localT(b.t), open: b.o, high: b.h, low: b.l, close: b.c})));
+  LIVE.lines = [];
+  LIVE.chart.timeScale().fitContent();
+  document.getElementById("liveChartNote").textContent = LIVE.bars.length ? "Today's 5-minute candles. Updates every 2 seconds while the market is open (crypto any time)." : "No trading yet today for " + sym + ".";
+  liveMarks();
+}
+function liveMarks() {
+  const d = LIVE.data; if (!LIVE.series || !d || d.symbol !== LIVE.symbol) return;
+  const bars = LIVE.bars;
+  const barFor = (iso) => { const t = Date.parse(iso) / 1000; let hit = null; for (const b of bars) { if (b.t <= t) hit = b; else break; } return hit; };
+  const marks = [];
+  for (const f of d.fills) {
+    const b = barFor(f.time); if (!b) continue;
+    marks.push({time: localT(b.t), position: f.side === "buy" ? "belowBar" : "aboveBar", color: f.side === "buy" ? UP() : DOWN(),
+      shape: f.side === "buy" ? "arrowUp" : "arrowDown", text: `${f.side === "buy" ? "Buy" : "Sell"} ${+(+f.qty).toFixed(6)} @ ${fmtPrice(f.price)}`});
+  }
+  marks.sort((a, b) => a.time - b.time);
+  LIVE.series.setMarkers(marks);
+  for (const l of LIVE.lines) LIVE.series.removePriceLine(l);
+  LIVE.lines = [];
+  const add = (price, color, title, style) => price && LIVE.lines.push(LIVE.series.createPriceLine({price, color, lineWidth: 2, lineStyle: style, axisLabelVisible: true, title}));
+  for (const o of d.orders) {
+    if (o.side === "sell" && ["stop", "stop_limit", "trailing_stop"].includes(o.type)) add(o.stop_price, "#d03b3b", "Stop", 2);
+    else if (o.side === "sell" && o.type === "limit") add(o.limit_price, "#0ca30c", "Target", 2);
+    else if (o.side === "buy" && o.limit_price) add(o.limit_price, css("--series"), "Buy order", 1);
+  }
+  const p = d.positions.find((x) => x.link === d.symbol);
+  if (p) add(p.avg_entry_price, "#898781", "Your entry", 1);
+}
+async function livePrice() {
+  const sym = LIVE.symbol; if (!sym || !LIVE.series || !LIVE.bars.length) return;
+  const open = sym.includes("/") || (ST() && S.clock && S.clock.is_open);
+  if (!open) { document.getElementById("livePrice").textContent = "· market closed"; return; }
+  try {
+    const q = (await api("/api/market/quote?symbols=" + enc(sym))).quotes[sym];
+    if (!q || !q.price || sym !== LIVE.symbol) return;
+    document.getElementById("livePrice").textContent = "· " + fmtPrice(q.price);
+    const now = Date.now() / 1000, last = LIVE.bars[LIVE.bars.length - 1];
+    if (now >= last.t + LIVE.barSec) {  // a new 5-minute candle has started
+      const t = Math.floor(now / LIVE.barSec) * LIVE.barSec;
+      LIVE.bars.push({t, o: q.price, h: q.price, l: q.price, c: q.price, v: 0});
+    } else { last.c = q.price; last.h = Math.max(last.h, q.price); last.l = Math.min(last.l, q.price); }
+    const b = LIVE.bars[LIVE.bars.length - 1];
+    LIVE.series.update({time: localT(b.t), open: b.o, high: b.h, low: b.l, close: b.c});
+  } catch (_) {}
+}
+
 route();

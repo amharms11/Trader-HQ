@@ -57,9 +57,10 @@ function route() {
   else if (h === "orders") { view = "orders"; renderOrdersView(); }
   else if (h === "reports") { view = "reports"; if (window.FX) window.FX.renderReports(); }
   else if (h === "tools") { view = "tools"; if (window.FX) window.FX.renderTools(); }
+  else if (h === "live") { view = "live"; if (window.FX && window.FX.renderLive) window.FX.renderLive(); }
   MK.view = view;
   if (view !== "symbol") stopLive();
-  for (const v of ["bot", "markets", "scanner", "orders", "reports", "tools", "symbol"]) {
+  for (const v of ["bot", "live", "markets", "scanner", "orders", "reports", "tools", "symbol"]) {
     const node = document.getElementById("view-" + v); if (node) node.hidden = v !== view;
   }
   document.querySelectorAll("#nav a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === (view === "symbol" ? "markets" : view) ? "page" : "false"));

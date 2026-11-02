@@ -447,6 +447,38 @@ class AppTests(Base):
         self.app.tick()
         self.assertEqual(self.b.orders, [])
 
+    def test_live_view(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        iso = lambda h: (now - dt.timedelta(minutes=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.b.closed = [order("b1", "AAPL", "buy", 10, 200, iso(30), "amhd-1"),
+                         order("b2", "TINY", "buy", 10, 5, iso(25), "amhd-2"), order("s2", "TINY", "sell", 10, 5.5, iso(5), "amhd-3")]
+        self.b.open = [{"id": "sl", "symbol": "AAPL", "side": "sell", "type": "stop", "qty": "10", "stop_price": "205"},
+                       {"id": "tp", "symbol": "AAPL", "side": "sell", "type": "limit", "qty": "10", "limit_price": "220.5"}]
+        d = self.req("/api/live")[1]
+        self.assertEqual(d["symbol"], "AAPL")  # an open position comes first
+        self.assertEqual([f["side"] for f in d["fills"]], ["buy"])
+        aapl = next(p for p in d["positions"] if p["link"] == "AAPL")
+        self.assertEqual((aapl["stop"], aapl["target"]), (205, 220.5))
+        self.assertAlmostEqual(aapl["to_stop_pct"], (205 / 210 - 1) * 100)
+        btc = next(p for p in d["positions"] if p["kind"] == "crypto")
+        self.assertEqual(btc["link"], "BTC/USD")
+        self.assertEqual({o["type"] for o in d["orders"]}, {"stop", "limit"})
+        sc = d["score"]
+        self.assertEqual((sc["closed"], sc["wins"], sc["fills"]), (1, 1, 3))
+        self.assertAlmostEqual(sc["realized"], 5)
+        tiny = self.req("/api/live?symbol=TINY")[1]
+        self.assertEqual([f["side"] for f in tiny["fills"]], ["buy", "sell"])
+        self.assertIn("TINY", tiny["symbols"])
+
+    def test_plan_reasoning_goes_to_feed(self):
+        class P(T.Plan):
+            kind, label = "day", "Day trade"
+        plan = P(self.b, T.load_settings())
+        plan.outlook, plan.trades = "Quiet morning, no setups.", []
+        self.app.add_plan(plan, 60)
+        texts = [a["text"] for a in self.app.activity]
+        self.assertIn("Day trade: Claude's view: Quiet morning, no setups.", texts)
+
     def test_earnings_warning_on_buy_suggestions(self):
         class P(T.Plan):
             kind, label = "run", "Long-term"
