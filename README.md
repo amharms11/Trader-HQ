@@ -116,7 +116,21 @@ The **Live** tab is for watching the bot work:
 - **Live feed:** each check, Claude's reasoning, and every order as it happens.
 - **Open trades** with live profit or loss and how far each is from its stop and target, plus **today's scoreboard**.
 
-To let it trade on its own while you watch (paper only), turn on **Auto-approve** in Settings.
+**Auto-approve** (on the Live tab and the Bot page) lets the bot trade on its own while you watch, on paper only:
+- a **switch** to turn it on or off
+- a **slider** for the largest trade it may approve without asking ($0 to $2,000)
+- **checkboxes** for which bots it applies to: long-term, day trading, options, crypto
+
+Bigger trades, and trades from bots you didn't tick, still wait for your Approve. All the normal limits still apply. In live mode, every trade always asks.
+
+## Calendar
+The **Calendar** tab shows every day's profit or loss on a monthly calendar:
+- ▲ green days and ▼ red days, with the dollar and % change; the color is deeper for bigger moves
+- how many trades happened that day
+- month totals, up vs. down days, best and worst day, and realized gains from closed trades
+- arrows to move between months, plus a month-by-month summary below
+
+It uses your account's daily value, so it includes open positions as well as closed trades.
 
 ## Watchlists, alerts, recurring buys, reports and tools
 - **Watchlists** (Bot page): keep lists of stocks, ETFs and crypto with live prices. Star any symbol with **☆ Watch** on its page. One click lets the long-term, day-trading, options or crypto bot watch a list, and the Scanner can scan your watchlists.

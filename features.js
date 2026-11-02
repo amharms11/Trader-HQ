@@ -463,7 +463,7 @@ FX.renderLive = function () {
             el("div", {class: "row"},
               el("button", {class: "btn primary", type: "button", id: "liveCryptoStart", onclick: () => post("/api/crypto/start", {}, "Crypto bot started.").then(liveTick).catch(() => {})}, "Start crypto bot"),
               el("button", {class: "btn danger", type: "button", id: "liveCryptoStop", hidden: true, onclick: () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(liveTick).catch(() => {})}, "Stop crypto bot")))),
-        el("p", {id: "liveApproveNote", class: "hint", style: "margin:10px 0 0"})),
+        el("div", {id: "autoPanelLive", style: "margin-top:12px"})),
       el("section", {class: "card", id: "livePending", hidden: true}, el("h2", {}, "Waiting for your approval"), el("div", {class: "proposals", id: "livePendingList"})),
       el("div", {class: "two"},
         el("section", {class: "card"},
@@ -499,9 +499,6 @@ function liveControls() {
   const busy = document.getElementById("liveBusy");
   busy.className = "pill " + (S.busy ? "open" : d.running || c.running ? "open" : "");
   busy.lastChild.textContent = S.busy || (d.running || c.running ? "Watching the market" : "Idle");
-  document.getElementById("liveApproveNote").textContent = S.auto_approve
-    ? "Auto-approve is on (paper): trades that pass every limit are placed without asking."
-    : "Each trade waits for your Approve below. Turn on auto-approve in Settings (paper only) to let it trade on its own while you watch.";
   const pending = (S.proposals || []).filter((p) => p.status === "pending");
   document.getElementById("livePending").hidden = !pending.length;
   document.getElementById("livePendingList").replaceChildren(...pending.map((p) => propCard(p, now)));
@@ -593,6 +590,106 @@ async function livePrice() {
     const b = LIVE.bars[LIVE.bars.length - 1];
     LIVE.series.update({time: localT(b.t), open: b.o, high: b.h, low: b.l, close: b.c});
   } catch (_) {}
+}
+
+
+// ---------- auto-approve panel (Live tab and Bot page) ----------
+const AUTO_BOTS = [["long_term", "Long-term"], ["day", "Day trading"], ["options", "Options"], ["crypto", "Crypto"]];
+FX.autoPanel = function (box) {
+  if (!box || !ST() || !S.auto_rules) return;
+  if (box.contains(document.activeElement) && document.activeElement.type === "range") return;  // don't redraw mid-drag
+  const live = S.mode === "live", on = !!S.auto_enabled, r = S.auto_rules;
+  const save = async (patch) => {
+    try { await api("/api/settings", {settings: patch}); await refresh(); } catch (e) { toast(e.message, 7000); }
+  };
+  const amount = el("b", {}, money0(r.max_usd));
+  const slider = el("input", {type: "range", min: 0, max: 2000, step: 25, value: r.max_usd, disabled: !on || live, "aria-label": "Largest trade to auto-approve",
+    oninput: (e) => { amount.textContent = money0(+e.target.value); },
+    onchange: (e) => save({auto_rules: {max_usd: +e.target.value}})});
+  box.replaceChildren(el("div", {class: "auto-panel" + (on && !live ? " on" : "")},
+    el("label", {class: "switch"},
+      el("input", {type: "checkbox", role: "switch", checked: on && !live, disabled: live, onchange: (e) => save({auto_approve: e.target.checked})}),
+      el("span", {class: "track"}, el("span", {class: "thumb"})),
+      el("b", {}, "Auto-approve"), el("span", {class: "muted"}, live ? " (paper only: off in live mode)" : on ? " on" : " off")),
+    el("div", {class: "auto-slider"},
+      el("span", {}, "Approve trades up to ", amount, " each"), slider,
+      el("div", {class: "row hint", style: "justify-content:space-between;margin:0"}, el("span", {}, "$0"), el("span", {}, "$1,000"), el("span", {}, "$2,000"))),
+    el("div", {class: "row", style: "gap:14px"}, el("span", {class: "muted"}, "For:"),
+      AUTO_BOTS.map(([k, label]) => el("label", {class: "check", style: "font-weight:500"},
+        el("input", {type: "checkbox", checked: !!r[k], disabled: !on || live, onchange: (e) => save({auto_rules: {[k]: e.target.checked}})}), el("span", {}, label)))),
+    el("p", {class: "hint", style: "margin:0"}, live ? "In live mode every trade waits for your approval."
+      : on ? "Trades from the ticked bots that pass every limit and are no bigger than this are placed without asking. Bigger ones, and other bots', still wait for your Approve."
+        : "Off: every trade waits for your Approve.")));
+};
+setInterval(() => {
+  if (MK.view === "live") FX.autoPanel(document.getElementById("autoPanelLive"));
+  if (MK.view === "bot") FX.autoPanel(document.getElementById("autoPanelBot"));
+}, 1000);
+
+// ---------- Calendar: profit or loss for every day ----------
+const CAL = {month: null, data: null};
+FX.renderCalendar = async function () {
+  const root = document.getElementById("view-calendar");
+  if (!root.dataset.built) {
+    root.dataset.built = "1";
+    root.append(el("section", {class: "card"},
+      el("div", {class: "row", style: "justify-content:space-between"},
+        el("div", {class: "row"},
+          el("button", {class: "btn small", type: "button", "aria-label": "Previous month", onclick: () => { CAL.month = addMonths(CAL.month, -1); drawCalendar(); }}, "‹"),
+          el("h2", {id: "calTitle", style: "margin:0;min-width:170px;text-align:center"}),
+          el("button", {class: "btn small", type: "button", "aria-label": "Next month", onclick: () => { CAL.month = addMonths(CAL.month, 1); drawCalendar(); }}, "›"),
+          el("button", {class: "btn small", type: "button", onclick: () => { CAL.month = null; drawCalendar(); }}, "This month")),
+        el("span", {class: "hint", style: "margin:0"}, "Daily change in your account value (it includes open positions, not just closed trades).")),
+      el("div", {id: "calStats", class: "stats", style: "margin:12px 0"}),
+      el("div", {id: "calGrid", class: "cal-grid"})),
+      el("section", {class: "card"}, el("h2", {}, "Month by month"), el("div", {id: "calMonths", class: "cal-months"})));
+  }
+  document.getElementById("calGrid").replaceChildren(loading("Reading your account history…"));
+  try { CAL.data = await api("/api/reports/daily-pl"); } catch (e) { document.getElementById("calGrid").replaceChildren(el("div", {class: "empty"}, e.message)); return; }
+  drawCalendar();
+};
+const ymKey = (d) => d.slice(0, 7);
+function addMonths(ym, n) { const [y, m] = (ym || CAL.data.today.slice(0, 7)).split("-").map(Number); const d = new Date(Date.UTC(y, m - 1 + n, 1)); return d.toISOString().slice(0, 7); }
+function drawCalendar() {
+  const data = CAL.data; if (!data) return;
+  const ym = CAL.month || data.today.slice(0, 7);
+  CAL.month = ym;
+  const byDate = Object.fromEntries(data.days.map((d) => [d.date, d]));
+  const [y, m] = ym.split("-").map(Number);
+  document.getElementById("calTitle").textContent = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString([], {month: "long", year: "numeric", timeZone: "UTC"});
+  const days = data.days.filter((d) => ymKey(d.date) === ym && d.change !== null && d.change !== undefined);
+  const total = days.reduce((a, d) => a + d.change, 0), up = days.filter((d) => d.change > 0.005), down = days.filter((d) => d.change < -0.005);
+  const best = days.reduce((a, d) => !a || d.change > a.change ? d : a, null), worst = days.reduce((a, d) => !a || d.change < a.change ? d : a, null);
+  const realized = data.days.filter((d) => ymKey(d.date) === ym).reduce((a, d) => a + (d.realized || 0), 0);
+  const stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
+  const short = (d) => d ? new Date(d.date + "T12:00").toLocaleDateString([], {month: "short", day: "numeric"}) : "";
+  document.getElementById("calStats").replaceChildren(
+    stat("Month total", days.length ? signed(total) : "–", tone(total)), stat("Up days / down days", `${up.length} ▲ / ${down.length} ▼`),
+    stat("Best day", best && best.change > 0 ? `${signed(best.change)} (${short(best)})` : "–", "up"),
+    stat("Worst day", worst && worst.change < 0 ? `${signed(worst.change)} (${short(worst)})` : "–", "down"),
+    stat("Realized from closed trades", signed(realized), tone(realized)));
+  const first = new Date(Date.UTC(y, m - 1, 1)), startDow = first.getUTCDay(), count = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const maxAbs = Math.max(1, ...days.map((d) => Math.abs(d.pct || 0)));
+  const cells = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => el("div", {class: "cal-head"}, d));
+  for (let i = 0; i < startDow; i++) cells.push(el("div", {class: "cal-cell blank"}));
+  for (let day = 1; day <= count; day++) {
+    const date = `${ym}-${String(day).padStart(2, "0")}`, d = byDate[date], has = d && d.change !== null && d.change !== undefined;
+    const dow = (startDow + day - 1) % 7, future = date > data.today;
+    const strength = has ? Math.min(1, Math.abs(d.pct || 0) / Math.min(maxAbs, 3)) : 0;
+    const bg = has && Math.abs(d.change) > 0.005 ? `rgba(${d.change > 0 ? "12,163,12" : "208,59,59"},${(0.12 + 0.38 * strength).toFixed(2)})` : "";
+    const tip = has ? `${date}: ${signed(d.change)} (${pct(d.pct)})` + (d.fills ? `, ${d.fills} fill(s)` : "") + (d.realized ? `, realized ${signed(d.realized)}` : "") + (d.live ? " (so far today)" : "") : date;
+    cells.push(el("div", {class: "cal-cell" + (date === data.today ? " today" : "") + (dow === 0 || dow === 6 ? " weekend" : "") + (future ? " future" : ""), style: bg ? `background:${bg}` : "", title: tip},
+      el("span", {class: "cal-day"}, String(day)),
+      has ? el("b", {class: "cal-amt"}, (d.change > 0.005 ? "▲ " : d.change < -0.005 ? "▼ " : "") + signed(d.change)) : null,
+      has ? el("span", {class: "cal-pct"}, pct(d.pct)) : null,
+      d && d.fills ? el("span", {class: "cal-fills"}, d.fills + (d.fills === 1 ? " trade" : " trades")) : null));
+  }
+  document.getElementById("calGrid").replaceChildren(...cells);
+  const months = {};
+  for (const d of data.days) if (d.change !== null && d.change !== undefined) months[ymKey(d.date)] = (months[ymKey(d.date)] || 0) + d.change;
+  const keys = Object.keys(months).sort().slice(-12).reverse();
+  document.getElementById("calMonths").replaceChildren(...(keys.length ? keys.map((k) => el("button", {type: "button", class: "cal-month" + (k === ym ? " on" : ""), onclick: () => { CAL.month = k; drawCalendar(); }},
+    el("span", {}, new Date(k + "-15T12:00").toLocaleDateString([], {month: "short", year: "numeric"})), el("b", {class: tone(months[k])}, signed(months[k])))) : [el("div", {class: "empty"}, "No history yet. Results appear after your first trading day.")]));
 }
 
 route();

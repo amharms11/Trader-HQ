@@ -70,6 +70,11 @@ DEFAULT_SETTINGS = {
     "daily_loss_stop_pct": 3,      # no new buys once the account is down this much today
     "limit_slippage_pct": 0.5,     # limit price = last price +/- this %, so a fast move can't fill badly
     "auto_approve": False,         # paper only: place orders that pass every limit without asking
+    "auto_rules": {
+        # What auto-approve may place on its own (paper only). Everything else still asks.
+        "max_usd": 250,                # largest trade (buy or sell) it may approve, in dollars
+        "long_term": True, "day": True, "options": False, "crypto": True,
+    },
     "day": {
         "watchlist": ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "META"],
         "strategy": ("Cautious intraday trading of liquid stocks and ETFs. Only enter with a clear setup in "
@@ -139,7 +144,7 @@ def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         saved = json.loads(SETTINGS_FILE.read_text())
-        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto")}
+        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market", "crypto", "auto_rules")}
         s.update(saved)
         for k, v in sections.items():
             s[k].update(v)
@@ -237,8 +242,30 @@ def confirm_mode(settings):
     print()
 
 
-def can_auto_approve(settings):
-    return bool(settings.get("auto_approve")) and settings["mode"] == "paper"
+AUTO_KINDS = {"run": "long_term", "day": "day", "options": "options", "crypto": "crypto"}
+
+
+def can_auto_approve(settings, kind=None, value=None):
+    """Auto-approve only works on paper. With a kind and a dollar value, it also checks the user's rules:
+    that bot must be allowed and the trade must be no bigger than the slider amount."""
+    if not settings.get("auto_approve") or settings["mode"] != "paper":
+        return False
+    if kind is None:
+        return True
+    rules = settings.get("auto_rules") or {}
+    if not rules.get(AUTO_KINDS.get(kind, kind)):
+        return False
+    return value is not None and value <= float(rules.get("max_usd") or 0)
+
+
+def trade_value(kind, t, o):
+    """Rough dollar size of a checked trade, for the auto-approve limit."""
+    o = o or {}
+    for k in ("cost", "amount", "value"):
+        if o.get(k) is not None:
+            return float(o[k])
+    mult = 100 if kind == "options" else 1
+    return float(o.get("qty") or t.get("qty") or 0) * float(o.get("limit_price") or 0) * mult
 
 
 # ---------- Alpaca ----------
@@ -1341,8 +1368,8 @@ def day_tick(b, settings, state, progress=print):
 
 # ---------- terminal commands ----------
 
-def approve(settings, question):
-    if can_auto_approve(settings):
+def approve(settings, question, kind=None, value=None):
+    if can_auto_approve(settings, kind, value):
         print(f"   {question} Auto-approved (paper).")
         return True
     return input(f"   {question} [y/N] ").strip().lower() in ("y", "yes")
@@ -1364,7 +1391,7 @@ def run_plan_cli(plan):
             print(f"   Blocked: {why}.\n")
             journal("blocked", mode=plan.mode, trade=t, reason=why)
             continue
-        if not approve(plan.settings, plan.question(t, o)):
+        if not approve(plan.settings, plan.question(t, o), plan.kind, trade_value(plan.kind, t, o)):
             print("   Skipped.\n")
             journal("skipped", mode=plan.mode, trade=t)
             continue

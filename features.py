@@ -428,6 +428,35 @@ def daily_summary(broker, day=None):
     return s
 
 
+def daily_pl(broker):
+    """Profit or loss for every trading day, from the account's daily value, plus fills and realized gains."""
+    try:
+        hist = broker.portfolio_history("all", "1D") or {}
+    except RuntimeError:
+        hist = broker.portfolio_history("1A", "1D") or {}
+    points = [(t, v) for t, v in zip(hist.get("timestamp") or [], hist.get("equity") or []) if v]
+    days = {}
+    for (_, prev), (t, v) in zip(points, points[1:]):
+        d = dt.datetime.fromtimestamp(t, T.ET).date().isoformat()
+        days[d] = {"date": d, "change": v - prev, "pct": (v / prev - 1) * 100 if prev else 0.0, "equity": v}
+    acct = broker.account()
+    equity, last = float(acct["equity"]), float(acct["last_equity"])
+    today = today_et().isoformat()
+    if last > 0 and (today_et().weekday() < 5 or abs(equity - last) > 0.005):
+        days[today] = {"date": today, "change": equity - last, "pct": (equity / last - 1) * 100, "equity": equity, "live": True}
+    fills = fetch_fills(broker, max_pages=6)
+    to_day = lambda iso: dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET).date().isoformat()
+    for f in fills:
+        d = days.setdefault(to_day(f["time"]), {"date": to_day(f["time"]), "change": None, "pct": None, "equity": None})
+        d["fills"] = d.get("fills", 0) + 1
+    trades, _ = match_trades(fills)
+    for t in trades:
+        d = days.setdefault(to_day(t["closed"]), {"date": to_day(t["closed"]), "change": None, "pct": None, "equity": None})
+        d["realized"] = d.get("realized", 0) + t["pnl"]
+        d["closed_trades"] = d.get("closed_trades", 0) + 1
+    return {"days": sorted(days.values(), key=lambda d: d["date"]), "today": today}
+
+
 # ---------- earnings and dividends ----------
 
 def dividends(market, symbol):

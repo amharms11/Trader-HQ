@@ -143,6 +143,21 @@ class ApprovalTests(Base):
         self.assertEqual(live.placed, [])
         self.assertEqual(self.app.proposals[0]["status"], "pending")
 
+    def test_auto_approve_slider_and_bots(self):
+        s = T.load_settings()
+        s["auto_approve"] = True
+        s["auto_rules"] = {"max_usd": 150, "long_term": True, "day": False, "options": False, "crypto": True}
+        small = FakePlan(self.broker, s, [trade(qty=1)])           # $100: under $150
+        big = FakePlan(self.broker, s, [trade("QQQ", qty=2)])      # $200: over $150
+        self.app.add_plan(small, ttl=60)
+        self.app.add_plan(big, ttl=60)
+        self.assertEqual((small.placed, big.placed), (["SPY"], []))
+        day = FakePlan(self.broker, s, [trade(qty=1)])
+        day.kind = "day"                                           # day trading isn't ticked
+        self.app.add_plan(day, ttl=60)
+        self.assertEqual(day.placed, [])
+        self.assertEqual(sum(p["status"] == "pending" for p in self.app.proposals), 2)
+
     def test_live_plan_needs_live_confirmation(self):
         s = T.load_settings()
         s["mode"] = "live"
@@ -243,6 +258,13 @@ class ServerTests(Base):
         self.assertEqual(self.req("/api/confirm-live", {"text": "live"})[0], 400)
         self.assertEqual(self.req("/api/confirm-live", {"text": "LIVE"})[0], 200)
         self.assertIn("account", self.req("/api/state")[1])
+
+    def test_auto_rules_settings(self):
+        code, _ = self.req("/api/settings", {"settings": {"auto_approve": True, "auto_rules": {"max_usd": 500, "options": True}}})
+        self.assertEqual(code, 200)
+        st = self.req("/api/state")[1]
+        self.assertEqual((st["auto_enabled"], st["auto_rules"]["max_usd"], st["auto_rules"]["options"]), (True, 500, True))
+        self.assertEqual(self.req("/api/settings", {"settings": {"auto_rules": {"max_usd": -5}}})[0], 400)
 
     def test_settings_roundtrip_and_errors(self):
         code, _ = self.req("/api/settings", {"settings": {"max_order_usd": "750"}})

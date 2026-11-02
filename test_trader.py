@@ -18,7 +18,7 @@ SETTINGS["day"]["watchlist"] = ["SPY", "AAPL"]
 
 def settings(**overrides):
     s = copy.deepcopy(SETTINGS)
-    sections = {k: overrides.pop(k, {}) for k in ("day", "options")}
+    sections = {k: overrides.pop(k, {}) for k in ("day", "options", "market", "crypto", "auto_rules")}
     s.update(overrides)
     for k, v in sections.items():
         s[k].update(v)
@@ -392,6 +392,19 @@ class ModeAndKeyTests(TempData):
         pt.SETTINGS_FILE.write_text(json.dumps({"mode": "real"}))
         with self.assertRaises(RuntimeError):
             pt.load_settings()
+
+    def test_auto_approve_rules(self):
+        s = settings(auto_approve=True, auto_rules={"max_usd": 300, "options": False})
+        self.assertTrue(pt.can_auto_approve(s))                       # it's on
+        self.assertTrue(pt.can_auto_approve(s, "run", 250))
+        self.assertFalse(pt.can_auto_approve(s, "run", 301))          # over the slider amount
+        self.assertFalse(pt.can_auto_approve(s, "options", 50))       # that bot isn't ticked
+        self.assertTrue(pt.can_auto_approve(s, "crypto", 300))
+        self.assertFalse(pt.can_auto_approve(s, "run", None))         # unknown size: ask
+        self.assertFalse(pt.can_auto_approve(settings(auto_rules={"max_usd": 999}), "run", 1))  # switch off
+        self.assertEqual(pt.trade_value("run", {"qty": 2}, {"qty": 2, "limit_price": 100.5, "cost": 201}), 201)
+        self.assertEqual(pt.trade_value("options", {"qty": 1}, {"qty": 1, "limit_price": 1.2}), 120)
+        self.assertEqual(pt.trade_value("day", {"qty": 3}, {"qty": 3, "limit_price": 10}), 30)
 
     def test_auto_approve_never_in_live(self):
         self.assertTrue(pt.can_auto_approve(settings(auto_approve=True)))

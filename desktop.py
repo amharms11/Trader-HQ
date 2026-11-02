@@ -470,7 +470,7 @@ class App:
             "mode": s["mode"], "live_ok": self.live_ok, "busy": self.busy,
             "has_keys": {"paper": T.has_keys("paper"), "live": T.has_keys("live")},
             "claude": self.cached("claude", 120, lambda: bool(T.claude_backend())),
-            "auto_approve": T.can_auto_approve(s),
+            "auto_approve": T.can_auto_approve(s), "auto_enabled": bool(s.get("auto_approve")), "auto_rules": s["auto_rules"],
             "plans": self.plans[:8], "proposals": [self.public(p) for p in self.proposals[:40]],
             "activity": self.activity[:60], "day": self.day_info(), "error": None,
             "notifications": self.store.notifications(15) if T.DATA.exists() else [],
@@ -564,7 +564,7 @@ class App:
                 self.proposals.insert(0, p)
                 if not ok:
                     T.journal("blocked", mode=plan.mode, trade=t, reason=why)
-                elif T.can_auto_approve(s):
+                elif T.can_auto_approve(s, plan.kind, T.trade_value(plan.kind, t, o)):
                     self._place(p, auto=True)
         del self.proposals[100:]
         if plan.outlook:
@@ -836,6 +836,8 @@ def make_handler(app, shutdown, restart=lambda: None):
                         return self._send(200, F.tax_csv(report).encode(), "text/csv; charset=utf-8",
                                           filename=f"trader-hq-gains-{year}.csv")
                     return self._send(200, report)
+                if path == "/api/reports/daily-pl":
+                    return self._send(200, app.cached("daily-pl", 30, lambda: F.daily_pl(app.data_broker())))
                 if path == "/api/reports/summaries":
                     rows = app.store.q("SELECT json FROM summaries WHERE mode=? ORDER BY day DESC LIMIT 30",
                                        (app.settings()["mode"],))

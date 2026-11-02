@@ -258,6 +258,21 @@ class ReportTests(Base):
         names = {s["strategy"] for s in r["by_strategy"]}
         self.assertEqual(names, {"Long-term bot", "Options", "Day trading"})
 
+    def test_daily_pl(self):
+        base = int(dt.datetime(2026, 10, 27, 4, 0, tzinfo=dt.timezone.utc).timestamp())  # midnight ET
+        self.b.portfolio_history = lambda p, f: {"timestamp": [base + i * 86400 for i in range(4)], "equity": [0, 10000, 10150, 10050]}
+        self.b.closed = [order("b", "TINY", "buy", 10, 5, "2026-10-28T15:00:00Z", "amhd-1"),
+                         order("s", "TINY", "sell", 10, 5.5, "2026-10-28T19:00:00Z", "amhd-2")]
+        with mock.patch.object(F, "today_et", return_value=D0):
+            r = F.daily_pl(self.b)
+        days = {d["date"]: d for d in r["days"]}
+        self.assertNotIn("2026-10-27", days)                       # the account had no value yet
+        self.assertAlmostEqual(days["2026-10-29"]["change"], 150)
+        self.assertAlmostEqual(days["2026-10-30"]["change"], -100)
+        self.assertEqual((days["2026-10-28"]["fills"], days["2026-10-28"]["realized"]), (2, 5))
+        self.assertTrue(days[D0.isoformat()]["live"])               # today, from the account right now
+        self.assertEqual(r["today"], D0.isoformat())
+
     def test_daily_summary(self):
         with mock.patch.object(F, "today_et", return_value=D0):
             s = F.daily_summary(self.b, D0)
