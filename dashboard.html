@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trader HQ</title>
+<link rel="icon" href="/assets/favicon.png">
 <style>
 :root {
   color-scheme: light dark;
@@ -371,7 +372,7 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
       <form class="form" id="githubForm">
         <label>GitHub token <small>Only needed if your Trader-HQ repository on GitHub is private. Create a fine-grained token with read-only access to Trader-HQ's Contents.</small>
           <input type="password" name="key" autocomplete="off" placeholder="github_pat_…"></label>
-        <div class="row"><button class="btn" type="submit">Save token</button><button class="btn" type="button" id="checkUpdates">Check now</button><span class="msg" id="githubMsg"></span></div>
+        <div class="row"><button class="btn" type="submit">Save token</button><button class="btn" type="button" id="checkUpdates">Check now</button><button class="btn" type="button" id="restartBtn">Restart now</button><span class="msg" id="githubMsg"></span></div>
       </form>
     </fieldset>
     <fieldset>
@@ -434,6 +435,14 @@ async function refresh() {
   catch (e) { renderOffline(e.message); return; }
   render();
 }
+async function restartApp() {
+  try { await api("/api/restart", {}); } catch (e) { toast(e.message, 7000); return; }
+  document.body.replaceChildren(el("main", {}, el("div", {class: "card center"}, el("h2", {}, "Updating and restarting…"), el("p", {}, "This takes a few seconds. The page will reload by itself."))));
+  for (let i = 0; i < 90; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try { const r = await fetch("/api/ping", {cache: "no-store"}); if (r.ok && i > 1) { location.reload(); return; } } catch (_) {}
+  }
+}
 function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (_) { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (_) {} }
 function renderOffline(msg) {
@@ -447,8 +456,12 @@ function render() {
   if (live && S.live_ok) banners.push(el("div", {class: "banner live"}, "Live mode: approved orders use real money."));
   if (S.error) banners.push(el("div", {class: "banner"}, S.error));
   if (S.update && S.update.available && S.update.latest && !sessionStorageGet("hideUpdate"))
-    banners.push(el("div", {class: "banner"}, "A new version of Trader HQ is ready. Press Quit, then open Trader HQ again to install it. ",
+    banners.push(el("div", {class: "banner"}, "A new version of Trader HQ is ready. ",
+      el("button", {class: "btn small primary", type: "button", onclick: restartApp}, "Restart now"), " ",
       el("button", {class: "btn small", type: "button", onclick: () => { sessionStorageSet("hideUpdate", "1"); refresh(); }}, "Later")));
+  if (S.update && S.update.just_updated && !sessionStorageGet("sawUpdate")) {
+    sessionStorageSet("sawUpdate", "1"); toast("Trader HQ was updated to the latest version.", 6000);
+  }
   if (!S.claude) banners.push(el("div", {class: "banner"}, "Claude isn't connected yet. Sign in to Claude Code on this Mac (run claude once in Terminal), or add an API key in Settings."));
   $("banners").replaceChildren(...banners);
 
@@ -739,7 +752,7 @@ $("keysForm").onsubmit = async (e) => {
 function updateText(u) {
   if (!u) return "";
   if (u.error) return "Couldn't check for updates: " + u.error;
-  if (u.available) return "A new version is ready. Press Quit, then open Trader HQ again to install it.";
+  if (u.available) return "A new version is ready. Use Restart now (in the banner, or below) to install it.";
   if (u.latest) return "You have the latest version (" + u.latest.slice(0, 7) + "). Trader HQ checks GitHub every time it opens.";
   return "Checking for updates…";
 }
@@ -748,6 +761,7 @@ $("githubForm").onsubmit = async (e) => {
   try { const u = await api("/api/github-token", {key: f.key.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; $("updateStatus").textContent = updateText(u); }
   catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
 };
+$("restartBtn").onclick = () => restartApp();
 $("checkUpdates").onclick = async () => {
   $("updateStatus").textContent = "Checking…";
   try { $("updateStatus").textContent = updateText(await api("/api/check-updates", {})); } catch (err) { $("updateStatus").textContent = err.message; }

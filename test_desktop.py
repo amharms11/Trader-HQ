@@ -252,6 +252,18 @@ class ServerTests(Base):
         self.assertEqual(code, 400)
         self.assertIn("number", err["error"])
 
+    def test_restart_waits_for_running_bots(self):
+        self.app.day_info = lambda: {"running": True}
+        code, err = self.req("/api/restart", {})
+        self.assertEqual(code, 400)
+        self.assertIn("Stop day trading", err["error"])
+        self.assertFalse(self.app.stopping.is_set())
+
+    def test_favicon(self):
+        h = {"Host": f"127.0.0.1:{self.port}"}
+        with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{self.port}/assets/favicon.png", headers=h)) as r:
+            self.assertEqual(r.headers["Content-Type"], "image/png")
+
     def test_cancel_order(self):
         self.assertEqual(self.req("/api/cancel-order", {"id": "o9"})[0], 200)
         self.assertEqual(self.broker.cancelled, ["o9"])
@@ -284,6 +296,22 @@ class InstallAppTests(unittest.TestCase):
         self.assertIn("trader.py app --no-open", text)
         self.assertIn("<string>TraderHQ</string>", (app / "Contents" / "Info.plist").read_text())
         self.assertIn("couldn", text)  # explains a failed start instead of opening a dead page
+
+    def test_icon_and_self_refresh(self):
+        desk = Path(tempfile.mkdtemp())
+        app = D.install_app(desktop=desk, quiet=True)
+        self.assertTrue((app / "Contents" / "Resources" / "TraderHQ.icns").exists())
+        self.assertIn("<key>CFBundleIconFile</key>", (app / "Contents" / "Info.plist").read_text())
+        self.assertFalse(D.refresh_launcher(desktop=desk))  # already current
+        launcher = app / "Contents" / "MacOS" / "TraderHQ"
+        launcher.write_text("#!/bin/bash\n# an older launcher\n")
+        self.assertTrue(D.refresh_launcher(desktop=desk))
+        self.assertIn("trader.py app --no-open", launcher.read_text())
+        other = Path(tempfile.mkdtemp())
+        (other / "Trader HQ.app" / "Contents").mkdir(parents=True)
+        (other / "Trader HQ.app" / "Contents" / "Info.plist").write_text("<plist>someone else's app</plist>")
+        self.assertFalse(D.refresh_launcher(desktop=other))  # never touches an app we didn't make
+        self.assertFalse(D.refresh_launcher(desktop=Path(tempfile.mkdtemp())))  # no icon: nothing to do
 
     def test_refuses_folders_macos_protects(self):
         home = Path(tempfile.mkdtemp())

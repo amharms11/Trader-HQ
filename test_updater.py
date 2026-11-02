@@ -45,7 +45,8 @@ class UpdaterTests(unittest.TestCase):
             p.stop()
 
     def test_only_program_files_are_wanted(self):
-        for ok in ("trader.py", "dashboard.html", "market.js", "requirements.txt", "README.md", "vendor/lightweight-charts.js", "ninjatrader/GoldORB.cs"):
+        for ok in ("trader.py", "dashboard.html", "market.js", "requirements.txt", "README.md", "vendor/lightweight-charts.js", "ninjatrader/GoldORB.cs",
+                   "assets/TraderHQ.icns", "install.sh"):
             self.assertTrue(U.wanted(ok), ok)
         for bad in ("../evil.py", "vendor/../../x.py", ".github/workflows/x.yml", "vendor/sub/deep.js", "notes.exe", "/etc/passwd", "vendor/.hidden"):
             self.assertFalse(U.wanted(bad), bad)

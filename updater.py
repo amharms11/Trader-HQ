@@ -25,8 +25,8 @@ import trader as T
 REPO = "amharms11/Trader-HQ"
 BRANCH = "main"
 HERE = Path(__file__).resolve().parent
-TOP_LEVEL = re.compile(r"^[\w.-]+\.(py|html|js|txt|md)$|^\.gitignore$")
-FOLDERS = ("vendor", "ninjatrader")
+TOP_LEVEL = re.compile(r"^[\w.-]+\.(py|html|js|txt|md|sh)$|^\.gitignore$")
+FOLDERS = ("vendor", "ninjatrader", "assets")
 MAX_ZIP = 30 * 1024 * 1024
 
 

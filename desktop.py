@@ -31,7 +31,8 @@ import updater as U
 PORT = 8780
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "dashboard.html"
-STATIC = {"/market.js": ("market.js", "text/javascript; charset=utf-8"),
+STATIC = {"/assets/favicon.png": ("assets/favicon.png", "image/png"),
+          "/market.js": ("market.js", "text/javascript; charset=utf-8"),
           "/features.js": ("features.js", "text/javascript; charset=utf-8"),
           "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8")}
 DAY_TTL = 180          # seconds a day-trade suggestion can be approved before it goes stale
@@ -708,7 +709,7 @@ class App:
 
 # ---------- web server (only reachable from this Mac) ----------
 
-def make_handler(app, shutdown):
+def make_handler(app, shutdown, restart=lambda: None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -909,6 +910,13 @@ def make_handler(app, shutdown):
                     app.save_finnhub_key(str(body.get("key", "")))
                 elif path == "/api/cancel-order":
                     app.cancel_order(str(body.get("id", "")))
+                elif path == "/api/restart":
+                    if app.day_info()["running"] or (app.crypto_thread and app.crypto_thread.is_alive()):
+                        raise ValueError("Stop day trading and the crypto bot first, then restart.")
+                    app.stopping.set()
+                    self._send(200, {"ok": True})
+                    threading.Thread(target=restart, daemon=True).start()
+                    return
                 elif path == "/api/quit":
                     app.stopping.set()
                     app.day_stop.set()
@@ -928,7 +936,22 @@ def make_handler(app, shutdown):
 
 def make_server(app, port=PORT):
     holder = {}
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, lambda: holder["s"].shutdown()))
+
+    def restart():
+        """Install any update, then start a fresh copy of the app on the same address."""
+        time.sleep(0.3)
+        try:
+            changed = U.update(quiet=True)
+            if changed:
+                os.environ["TRADERHQ_JUST_UPDATED"] = str(len(changed))
+        except Exception:  # noqa: BLE001 - restart anyway
+            pass
+        os.environ["TRADERHQ_NO_UPDATE_ONCE"] = "1"  # already checked just now
+        holder["s"].shutdown()
+        holder["s"].server_close()
+        os.execv(sys.executable, [sys.executable, str(HERE / "trader.py"), "app", "--no-open"])
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, lambda: holder["s"].shutdown(), restart))
     holder["s"] = server
     return server
 
@@ -951,7 +974,7 @@ def serve(open_win=True, port=PORT):
         if open_win:
             open_window(url)
         return
-    if os.environ.get("TRADERHQ_NO_UPDATE") != "1":
+    if os.environ.pop("TRADERHQ_NO_UPDATE_ONCE", None) != "1" and os.environ.get("TRADERHQ_NO_UPDATE") != "1":
         try:
             changed = U.update(quiet=True)
         except Exception as e:  # never let an update problem stop the app from opening
@@ -962,6 +985,11 @@ def serve(open_win=True, port=PORT):
             server.server_close()
             os.environ["TRADERHQ_JUST_UPDATED"] = str(len(changed))
             os.execv(sys.executable, [sys.executable, str(HERE / "trader.py"), "app"] + ([] if open_win else ["--no-open"]))
+    try:
+        if refresh_launcher():
+            app.log("The Trader HQ icon on your Desktop was refreshed for this version.")
+    except Exception:  # noqa: BLE001 - never block startup over the icon
+        pass
     if os.environ.get("TRADERHQ_JUST_UPDATED"):
         app.updated_files = ["x"] * int(os.environ.pop("TRADERHQ_JUST_UPDATED") or 0)
         app.log("Trader HQ was updated to the latest version.")
@@ -1015,7 +1043,8 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleIdentifier</key><string>local.traderhq.launcher</string>
   <key>CFBundleExecutable</key><string>TraderHQ</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1.1</string>
+  <key>CFBundleIconFile</key><string>TraderHQ</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>
@@ -1040,7 +1069,7 @@ def protected_folder(folder, home=None):
     return None
 
 
-def install_app(desktop=None, python=None, here=None, home=None):
+def install_app(desktop=None, python=None, here=None, home=None, quiet=False):
     """Create 'Trader HQ.app' on the Desktop. It runs this folder's copy of the bot with this Python."""
     here = Path(here or HERE)
     blocked = protected_folder(here, home)
@@ -1058,9 +1087,40 @@ def install_app(desktop=None, python=None, here=None, home=None):
     macos = app / "Contents" / "MacOS"
     macos.mkdir(parents=True)
     (app / "Contents" / "Info.plist").write_text(PLIST)
+    icon = here / "assets" / "TraderHQ.icns"
+    if icon.exists():
+        (app / "Contents" / "Resources").mkdir()
+        shutil.copyfile(icon, app / "Contents" / "Resources" / "TraderHQ.icns")
     launcher = macos / "TraderHQ"
-    launcher.write_text(LAUNCHER.format(dir=shell_quote(here), python=shell_quote(python or sys.executable), port=PORT))
+    launcher.write_text(launcher_text(here, python))
     launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    print(f'Created "{app}". Double-click it to open the dashboard.')
-    print("If you move this folder later, run `python trader.py install-app` again from its new place.")
+    os.utime(app)  # nudge Finder to show the new icon
+    if not quiet:
+        print(f'Created "{app}". Double-click it to open the dashboard.')
+        print("If you move this folder later, run `python trader.py install-app` again from its new place.")
     return app
+
+
+def launcher_text(here, python=None):
+    return LAUNCHER.format(dir=shell_quote(here), python=shell_quote(python or sys.executable), port=PORT)
+
+
+def refresh_launcher(desktop=None, here=None):
+    """Keep the Desktop icon current: if this version changed the launcher or the icon, rebuild it in place."""
+    here = Path(here or HERE)
+    app = (Path(desktop) if desktop else Path.home() / "Desktop") / "Trader HQ.app"
+    plist = app / "Contents" / "Info.plist"
+    if not plist.exists() or "local.traderhq.launcher" not in plist.read_text(errors="ignore"):
+        return False  # no Trader HQ icon (or someone else's app with this name): leave it alone
+    launcher = app / "Contents" / "MacOS" / "TraderHQ"
+    icon = app / "Contents" / "Resources" / "TraderHQ.icns"
+    src_icon = here / "assets" / "TraderHQ.icns"
+    current = (plist.read_text() == PLIST and launcher.exists() and launcher.read_text() == launcher_text(here)
+               and (not src_icon.exists() or (icon.exists() and icon.read_bytes() == src_icon.read_bytes())))
+    if current:
+        return False
+    try:
+        install_app(desktop=app.parent, here=here, quiet=True)
+    except (RuntimeError, OSError):
+        return False
+    return True

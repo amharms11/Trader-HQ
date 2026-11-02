@@ -4,6 +4,15 @@ Claude suggests trades for your Alpaca account: longer-term stocks, day trades, 
 
 It starts on **paper** (simulated money). You can link a **live** account now, but it is only used if you switch it on and type `LIVE` each time you start.
 
+## Install or update on a Mac (one line)
+Open **Terminal**, paste this and press Return:
+```bash
+curl -fsSL https://raw.githubusercontent.com/amharms11/Trader-HQ/main/install.sh | bash
+```
+It downloads the latest Trader HQ into `~/Trader-HQ`, sets it up, puts a **Trader HQ** icon on your Desktop and opens it. Your keys, settings and history (in `~/.amh-trader`) are kept. Run the same line any time to repair or reinstall.
+
+**It keeps itself up to date:** every time you open Trader HQ it checks GitHub and installs any new version before the window opens, and refreshes the Desktop icon if needed. If an update arrives while it's open, a banner offers **Restart now**.
+
 ## Setup
 1. Make a free account at [alpaca.markets](https://alpaca.markets). In the dashboard, switch to your **Paper** account and generate API keys (they start with `PK`).
 2. Install and connect:
