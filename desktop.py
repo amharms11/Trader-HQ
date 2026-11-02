@@ -25,6 +25,7 @@ from pathlib import Path
 
 import market as M
 import trader as T
+import updater as U
 
 PORT = 8780
 HERE = Path(__file__).resolve().parent
@@ -134,6 +135,8 @@ class App:
         self.cache = {}
         self.stopping = threading.Event()
         self.market = M.Market(self.data_broker)
+        self.update_info = {"available": False}
+        self.updated_files = []                  # files changed by the update installed at startup
 
     # --- helpers ---
     def log(self, text):
@@ -220,6 +223,31 @@ class App:
         self.log(f"Selling all {symbol} at market.")
         self.forget()
 
+    def check_updates(self):
+        try:
+            self.update_info = {**U.check(), "error": None}
+        except RuntimeError as e:
+            self.update_info = {"available": False, "error": str(e)}
+        return self.update_info
+
+    def update_loop(self):
+        delay = 5
+        while not self.stopping.wait(delay):
+            info = self.check_updates()
+            delay = 3600 if info.get("error") else 6 * 3600
+
+    def save_github_token(self, key):
+        key = key.strip()
+        if not re.fullmatch(r"(github_pat_|ghp_)[A-Za-z0-9_]{20,255}", key):
+            raise ValueError("GitHub tokens start with github_pat_ or ghp_.")
+        lines = []
+        if T.CONFIG_FILE.exists():
+            lines = [l for l in T.CONFIG_FILE.read_text().splitlines() if not l.startswith("TRADERHQ_GITHUB_TOKEN=")]
+        T.save_private(T.CONFIG_FILE, "\n".join(lines + [f"TRADERHQ_GITHUB_TOKEN={key}"]) + "\n")
+        os.environ["TRADERHQ_GITHUB_TOKEN"] = key
+        self.log("GitHub token saved for updates.")
+        return self.check_updates()
+
     def save_finnhub_key(self, key):
         key = key.strip()
         if not re.fullmatch(r"[A-Za-z0-9]{10,64}", key):
@@ -252,6 +280,8 @@ class App:
             "auto_approve": T.can_auto_approve(s),
             "plans": self.plans[:8], "proposals": [self.public(p) for p in self.proposals[:40]],
             "activity": self.activity[:60], "day": self.day_info(), "error": None,
+            "update": {**self.update_info, "just_updated": len(self.updated_files),
+                       "version": (U.installed().get("sha") or "")[:7]},
         }
         if not out["has_keys"][s["mode"]] or (s["mode"] == "live" and not self.live_ok):
             return out
@@ -630,6 +660,10 @@ def make_handler(app, shutdown):
                     return self._send(200, app.manual_order(body.get("order") or {}, place=True))
                 elif path == "/api/positions/close":
                     app.close_position(body.get("symbol", ""))
+                elif path == "/api/github-token":
+                    return self._send(200, app.save_github_token(str(body.get("key", ""))))
+                elif path == "/api/check-updates":
+                    return self._send(200, app.check_updates())
                 elif path == "/api/finnhub-key":
                     app.save_finnhub_key(str(body.get("key", "")))
                 elif path == "/api/cancel-order":
@@ -668,13 +702,29 @@ def open_window(url):
 
 def serve(open_win=True, port=PORT):
     url = f"http://127.0.0.1:{port}"
+    app = App()
     try:
-        server = make_server(App(), port)
+        server = make_server(app, port)
     except OSError:
         print(f"Trader HQ is already running. Opening {url}")
         if open_win:
             open_window(url)
         return
+    if os.environ.get("TRADERHQ_NO_UPDATE") != "1":
+        try:
+            changed = U.update(quiet=True)
+        except Exception as e:  # never let an update problem stop the app from opening
+            changed = []
+            app.log(f"Couldn't check for updates: {e}")
+        if changed:  # restart so the new version is the one that runs
+            print(f"Installed an update ({len(changed)} files). Restarting...")
+            server.server_close()
+            os.environ["TRADERHQ_JUST_UPDATED"] = str(len(changed))
+            os.execv(sys.executable, [sys.executable, str(HERE / "trader.py"), "app"] + ([] if open_win else ["--no-open"]))
+    if os.environ.get("TRADERHQ_JUST_UPDATED"):
+        app.updated_files = ["x"] * int(os.environ.pop("TRADERHQ_JUST_UPDATED") or 0)
+        app.log("Trader HQ was updated to the latest version.")
+    threading.Thread(target=app.update_loop, daemon=True).start()
     print(f"Trader HQ dashboard: {url}  (press Quit in the dashboard, or Ctrl+C here, to stop)")
     if open_win:
         threading.Timer(0.5, open_window, args=(url,)).start()
@@ -701,7 +751,7 @@ if [ ! -f "$DIR/trader.py" ]; then
 fi
 if ! curl -s -o /dev/null "$URL/api/ping"; then
   cd "$DIR" && nohup "$PY" trader.py app --no-open >> "$LOG" 2>&1 &
-  for i in $(seq 1 75); do curl -s -o /dev/null "$URL/api/ping" && break; sleep 0.2; done
+  for i in $(seq 1 300); do curl -s -o /dev/null "$URL/api/ping" && break; sleep 0.2; done
   if ! curl -s -o /dev/null "$URL/api/ping"; then
     osascript -e 'display alert "Trader HQ couldn'"'"'t start" message "The details are in the file .amh-trader/app.log in your home folder. Open Terminal and run: cat ~/.amh-trader/app.log"'
     exit 1

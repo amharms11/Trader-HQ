@@ -343,6 +343,15 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
       </form>
     </fieldset>
     <fieldset>
+      <legend>Updates</legend>
+      <p id="updateStatus" class="msg" style="margin-top:0"></p>
+      <form class="form" id="githubForm">
+        <label>GitHub token <small>Only needed if your Trader-HQ repository on GitHub is private. Create a fine-grained token with read-only access to Trader-HQ's Contents.</small>
+          <input type="password" name="key" autocomplete="off" placeholder="github_pat_…"></label>
+        <div class="row"><button class="btn" type="submit">Save token</button><button class="btn" type="button" id="checkUpdates">Check now</button><span class="msg" id="githubMsg"></span></div>
+      </form>
+    </fieldset>
+    <fieldset>
       <legend>Company data (optional)</legend>
       <form class="form" id="finnhubForm">
         <label>Finnhub API key <small>Optional and free at finnhub.io. Adds company logos, dividend yield and beta on stock pages.</small>
@@ -402,6 +411,8 @@ async function refresh() {
   catch (e) { renderOffline(e.message); return; }
   render();
 }
+function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (_) { return null; } }
+function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (_) {} }
 function renderOffline(msg) {
   $("banners").replaceChildren(el("div", {class: "banner"}, "Can't reach the bot: " + msg + ". If you pressed Quit, open Trader HQ from your Desktop again."));
 }
@@ -412,6 +423,9 @@ function render() {
   const banners = [];
   if (live && S.live_ok) banners.push(el("div", {class: "banner live"}, "Live mode: approved orders use real money."));
   if (S.error) banners.push(el("div", {class: "banner"}, S.error));
+  if (S.update && S.update.available && S.update.latest && !sessionStorageGet("hideUpdate"))
+    banners.push(el("div", {class: "banner"}, "A new version of Trader HQ is ready. Press Quit, then open Trader HQ again to install it. ",
+      el("button", {class: "btn small", type: "button", onclick: () => { sessionStorageSet("hideUpdate", "1"); refresh(); }}, "Later")));
   if (!S.claude) banners.push(el("div", {class: "banner"}, "Claude isn't connected yet. Sign in to Claude Code on this Mac (run claude once in Terminal), or add an API key in Settings."));
   $("banners").replaceChildren(...banners);
 
@@ -661,6 +675,7 @@ async function openSettings() {
   form.replaceChildren(...sets, el("div", {class: "row"}, el("button", {class: "btn primary", type: "submit"}, "Save settings"), el("span", {class: "msg", id: "settingsMsg"})));
   form.dataset.defaults = JSON.stringify(defaults);
   $("claudeStatus").textContent = S && S.claude ? "Claude is connected." : "Claude isn't connected yet.";
+  $("updateStatus").textContent = updateText(S && S.update);
   $("settingsDlg").showModal();
 }
 function readSettings() {
@@ -688,6 +703,22 @@ $("keysForm").onsubmit = async (e) => {
   e.preventDefault(); const f = e.target, msg = $("keysMsg"); msg.className = "msg"; msg.textContent = "Checking with Alpaca…";
   try { await api("/api/keys", {mode: f.mode.value, key: f.key.value, secret: f.secret.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; refresh(); }
   catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
+function updateText(u) {
+  if (!u) return "";
+  if (u.error) return "Couldn't check for updates: " + u.error;
+  if (u.available) return "A new version is ready. Press Quit, then open Trader HQ again to install it.";
+  if (u.latest) return "You have the latest version (" + u.latest.slice(0, 7) + "). Trader HQ checks GitHub every time it opens.";
+  return "Checking for updates…";
+}
+$("githubForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, msg = $("githubMsg");
+  try { const u = await api("/api/github-token", {key: f.key.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; $("updateStatus").textContent = updateText(u); }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
+$("checkUpdates").onclick = async () => {
+  $("updateStatus").textContent = "Checking…";
+  try { $("updateStatus").textContent = updateText(await api("/api/check-updates", {})); } catch (err) { $("updateStatus").textContent = err.message; }
 };
 $("finnhubForm").onsubmit = async (e) => {
   e.preventDefault(); const f = e.target, msg = $("finnhubMsg");

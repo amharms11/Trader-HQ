@@ -16,6 +16,7 @@ Commands:
   python trader.py history          # every plan, approval, skip, block and order
   python trader.py app              # open the desktop dashboard (runs the bot in a window)
   python trader.py install-app      # put a "Trader HQ" icon on your Desktop that opens the dashboard
+  python trader.py update           # install the latest version from GitHub (the app also does this itself)
 
 Safety by design:
 - Paper unless you set "mode": "live" in settings.json AND type LIVE each time you start.
@@ -1439,11 +1440,15 @@ def main():
         import desktop
         desktop.install_app()
 
+    def update():
+        import updater
+        updater.update(quiet="--quiet" in args)
+
     actions = {
         "setup": lambda: setup(args[1] if len(args) > 1 else "paper"),
         "status": status, "run": run, "history": history, "flatten": flatten_cmd, "options": options_cmd,
         "day": lambda: day(once=len(args) > 1 and args[1] == "once"),
-        "app": app, "install-app": install_app,
+        "app": app, "install-app": install_app, "update": update,
     }
     if cmd not in actions:
         print(__doc__)
