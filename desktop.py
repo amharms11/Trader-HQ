@@ -10,22 +10,27 @@ the dashboard; trading keeps running in the background until you press Quit in t
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import market as M
 import trader as T
 
 PORT = 8780
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "dashboard.html"
+STATIC = {"/market.js": ("market.js", "text/javascript; charset=utf-8"),
+          "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8")}
 DAY_TTL = 180          # seconds a day-trade suggestion can be approved before it goes stale
 PLAN_TTL = 30 * 60     # seconds a long-term or options suggestion can be approved
 PERIODS = {"1W": ("1W", "1H"), "1M": ("1M", "1D"), "3M": ("3M", "1D"), "1Y": ("1A", "1D")}
@@ -65,6 +70,12 @@ def clean_settings(posted):
                 raise ValueError(f"{path} should be stock symbols separated by commas, like SPY, AAPL")
             return items
         text = str(value).strip()
+        if path == "market.data_feed" and text not in ("iex", "sip"):
+            raise ValueError("market.data_feed must be iex or sip")
+        if path == "market.sec_contact_email":
+            if text and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
+                raise ValueError("market.sec_contact_email doesn't look like an email address")
+            return text
         if not text:
             raise ValueError(f"{path} can't be empty")
         return text[:2000]
@@ -122,6 +133,7 @@ class App:
         self.day_state = None
         self.cache = {}
         self.stopping = threading.Event()
+        self.market = M.Market(self.data_broker)
 
     # --- helpers ---
     def log(self, text):
@@ -141,6 +153,83 @@ class App:
             return self.broker_factory(s["mode"])
         except SystemExit as e:  # Broker exits with a message when keys are missing
             raise RuntimeError(str(e.code)) from None
+
+    def data_broker(self):
+        """For reading prices and company data. Reading moves no money, so live mode doesn't need LIVE typed."""
+        s = self.settings()
+        try:
+            return self.broker_factory(s["mode"])
+        except SystemExit as e:
+            raise RuntimeError(str(e.code)) from None
+
+    # --- orders you place yourself ---
+    def manual_order(self, spec, place):
+        s = self.settings()
+        sym = str((spec or {}).get("symbol", "")).upper().strip()
+        self.market.ensure_assets()
+        asset = self.market.db.asset(sym)
+        if not asset:
+            raise ValueError(f"{sym or 'That symbol'} isn't a listed stock, ETF or crypto that Alpaca can trade.")
+        b = self.broker() if place else self.data_broker()
+        quote = self.market.quotes([sym]).get(sym)
+        positions = b.positions()
+        held = next((float(p["qty"]) for p in positions if p["symbol"] in (sym, sym.replace("/", ""))), 0.0)
+        cash = float(b.account()["cash"])
+        body, info = M.build_order(spec, asset, quote, held, s, cash)
+        if not place:
+            return {"ok": True, **info, "confirm": s["market"]["confirm_manual_orders"] or s["mode"] == "live"}
+        if s["mode"] == "live" and not spec.get("confirmed"):
+            raise ValueError("Live orders need the review step. Press Review first.")
+        with self.lock:
+            started = time.perf_counter()
+            order = b._api("/v2/orders", method="POST", body=body)
+            took = (time.perf_counter() - started) * 1000
+        T.journal("manual_order", mode=b.mode, trade={"symbol": sym, "side": body["side"],
+                                                     "qty": body.get("qty") or body.get("notional")},
+                  order=body, order_id=order.get("id"), status=order.get("status"))
+        self.log(f"{info['summary']}: sent in {took:.0f} ms ({order.get('status', 'submitted')}).")
+        self.forget()
+        return {"ok": True, **info, "status": order.get("status"), "took_ms": round(took), "id": order.get("id")}
+
+    def recent_orders(self):
+        b = self.data_broker()
+        rows = b._api("/v2/orders", params={"status": "all", "limit": 60, "nested": "true"}) or []
+        out = []
+        for o in rows:
+            legs = o.get("legs") or []
+            out.append({"id": o["id"], "symbol": o["symbol"], "side": o["side"], "qty": o.get("qty"),
+                        "notional": o.get("notional"), "type": o.get("type"), "order_class": o.get("order_class"),
+                        "limit_price": o.get("limit_price"), "stop_price": o.get("stop_price"),
+                        "trail_percent": o.get("trail_percent"), "status": o.get("status"),
+                        "filled_qty": o.get("filled_qty"), "filled_avg_price": o.get("filled_avg_price"),
+                        "submitted_at": o.get("submitted_at"), "time_in_force": o.get("time_in_force"),
+                        "legs": [{"id": l["id"], "type": l.get("type"), "side": l.get("side"),
+                                  "limit_price": l.get("limit_price"), "stop_price": l.get("stop_price"),
+                                  "status": l.get("status")} for l in legs]})
+        return out
+
+    def close_position(self, symbol):
+        b = self.broker()
+        self.market.ensure_assets()
+        if not self.market.db.asset(str(symbol).upper()):
+            raise ValueError("unknown symbol")
+        sym = str(symbol).upper().replace("/", "")
+        with self.lock:
+            b._api(f"/v2/positions/{sym}", method="DELETE")
+        T.journal("close_position", mode=b.mode, trade={"symbol": symbol, "side": "sell", "qty": "all"})
+        self.log(f"Selling all {symbol} at market.")
+        self.forget()
+
+    def save_finnhub_key(self, key):
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z0-9]{10,64}", key):
+            raise ValueError("That doesn't look like a Finnhub API key.")
+        lines = []
+        if T.CONFIG_FILE.exists():
+            lines = [l for l in T.CONFIG_FILE.read_text().splitlines() if not l.startswith("FINNHUB_API_KEY=")]
+        T.save_private(T.CONFIG_FILE, "\n".join(lines + [f"FINNHUB_API_KEY={key}"]) + "\n")
+        os.environ["FINNHUB_API_KEY"] = key
+        self.log("Finnhub API key saved.")
 
     def cached(self, key, seconds, fn):
         hit = self.cache.get(key)
@@ -451,10 +540,39 @@ def make_handler(app, shutdown):
             if not self._host_ok():
                 return self._send(403, {"error": "forbidden"})
             path, _, query = self.path.partition("?")
-            params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+            params = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
             try:
                 if path in ("/", "/index.html"):
                     return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+                if path in STATIC:
+                    file, ctype = STATIC[path]
+                    return self._send(200, (HERE / file).read_bytes(), ctype)
+                mk = app.market
+                if path == "/api/market/assets":
+                    return self._send(200, mk.list_assets(params.get("kind", "stock"), params.get("q", ""),
+                                                          max(0, int(params.get("offset", 0))),
+                                                          min(100, max(1, int(params.get("limit", 50))))))
+                if path == "/api/market/search":
+                    return self._send(200, {"rows": mk.search(params.get("q", ""))})
+                if path == "/api/market/quote":
+                    syms = [x for x in params.get("symbols", "").upper().split(",") if x][:50]
+                    return self._send(200, {"quotes": mk.quotes(syms) if syms else {}})
+                if path == "/api/market/bars":
+                    return self._send(200, mk.bars(params.get("symbol", "").upper(), params.get("range", "1M")))
+                if path == "/api/market/info":
+                    info = mk.info(params.get("symbol", "").upper())
+                    sym = info["asset"]["symbol"]
+                    held = next((app.position_row(p) for p in app.data_broker().positions()
+                                 if p["symbol"] in (sym, sym.replace("/", ""))), None)
+                    return self._send(200, {**info, "position": held, "mode": app.settings()["mode"]})
+                if path == "/api/market/news":
+                    return self._send(200, {"rows": mk.news(params.get("symbol", "").upper())})
+                if path == "/api/market/movers":
+                    return self._send(200, mk.movers("crypto" if params.get("market") == "crypto" else "stocks"))
+                if path == "/api/market/actives":
+                    return self._send(200, mk.most_actives("trades" if params.get("by") == "trades" else "volume"))
+                if path == "/api/orders/recent":
+                    return self._send(200, {"rows": app.recent_orders()})
                 if path == "/api/ping":
                     return self._send(200, {"ok": True})
                 if path == "/api/state":
@@ -503,6 +621,17 @@ def make_handler(app, shutdown):
                     app.save_keys(body.get("mode"), str(body.get("key", "")), str(body.get("secret", "")))
                 elif path == "/api/anthropic-key":
                     app.save_anthropic_key(str(body.get("key", "")))
+                elif path == "/api/market/scan":
+                    return self._send(200, app.market.scan(body.get("kind", "stock"), body.get("filters") or {},
+                                                           str(body.get("sort", "change_pct"))))
+                elif path == "/api/orders/preview":
+                    return self._send(200, app.manual_order(body.get("order") or {}, place=False))
+                elif path == "/api/orders":
+                    return self._send(200, app.manual_order(body.get("order") or {}, place=True))
+                elif path == "/api/positions/close":
+                    app.close_position(body.get("symbol", ""))
+                elif path == "/api/finnhub-key":
+                    app.save_finnhub_key(str(body.get("key", "")))
                 elif path == "/api/cancel-order":
                     app.cancel_order(str(body.get("id", "")))
                 elif path == "/api/quit":

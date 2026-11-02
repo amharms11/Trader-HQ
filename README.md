@@ -59,6 +59,46 @@ This puts a **Trader HQ** icon on your Desktop. From then on, just double-click 
 - If you move the Trader HQ folder, run `python trader.py install-app` again from its new location.
 - Problems starting? See `~/.amh-trader/app.log`.
 
+## Markets, charts, scanner and order ticket
+The dashboard is also a stock, ETF and crypto research tool. Use the tabs at the top: **Bot**, **Markets**, **Scanner**, **Orders**, or search any symbol or company name.
+
+- **Markets:** every stock, ETF and crypto pair Alpaca can trade, with price, daily change and volume. Over-the-counter stocks are left out. ETFs are recognized by their names, so a few may show under Stocks.
+- **Symbol pages:** click any row, search result or holding to open its page:
+  - **Chart:** 1 day, 1 week, 1 month, 3 months, year to date, 1 year, 5 years or all, as candles or a line. It updates every 2 seconds while the market is open, and any time for crypto.
+  - **Technical studies:** volume, moving averages (SMA 20/50/200, EMA 9/21), VWAP, Bollinger bands, RSI and MACD.
+  - **Key stats:** open, high, low, volume, 52-week range, market cap, P/E, EPS and shares outstanding.
+  - **About:** the company profile and a description, plus yearly revenue, profit and EPS from SEC filings.
+  - **News**, and **your position** with *Protect with OCO* and *Sell all* buttons.
+- **Scanner:** today's top gainers and losers (stocks and crypto) and the most active stocks. A **custom scan** checks every listed stock, ETF or crypto pair against filters for price, % change, volume, gap and volume vs yesterday. One-click presets include gainers, losers, gap up/down, unusual volume and near the day's high.
+- **Order ticket** on every symbol page:
+  - **Order types:** market, limit, stop (stop-loss), stop-limit and trailing stop.
+  - **Strategies:**
+    - **Bracket:** buy with a take-profit and a stop-loss attached.
+    - **OTO:** buy, then place one exit order once it fills.
+    - **OCO:** a take-profit and a stop-loss on shares you own, where one cancels the other.
+  - **Amounts and timing:** dollar amounts or fractional shares where Alpaca allows them, Day or GTC, and pre/after-market for limit orders.
+  - **Speed:** orders go straight to Alpaca, and the app shows how many milliseconds the round trip took.
+- **Orders:** your last 60 orders, including the take-profit and stop-loss parts, with Cancel buttons.
+
+**Safety for orders you place yourself:**
+- The ticket won't sell shares you don't own (no short selling).
+- It won't spend more cash than you have.
+- It won't place a buy larger than **Largest buy you place yourself** in Settings (default $1,000).
+- In live mode you must type LIVE, and every order goes through a review step. On paper you can turn the review step off for one-click orders.
+
+**Where the data comes from:**
+- **Prices, charts, screeners and news:** Alpaca.
+  - The free **IEX** feed is real-time but covers only one exchange, so its volume is a small share of the market.
+  - If you buy Alpaca's full-market data plan, choose **SIP** in Settings.
+  - Free price history starts in 2016.
+- **Company facts and financials:** SEC EDGAR, free. Adding your email in Settings is optional, but the SEC asks for it.
+- **Descriptions:** Wikipedia, matched by company name.
+- **Optional:** a free **Finnhub** API key (Settings) adds logos, dividend yield and beta.
+- The asset lists and fetched data are cached on your Mac in `~/.amh-trader/market.db`.
+- None of this text is sent to Claude. The bot still only sees prices and account numbers.
+
+Charts use [TradingView Lightweight Charts™](https://www.tradingview.com/) (Apache 2.0, see `vendor/`).
+
 ## Commands
 ```bash
 python trader.py status      # account value, cash, positions (stocks and options)
@@ -154,7 +194,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py
+python -m unittest test_trader.py test_desktop.py test_market.py
 ```
 No network or keys needed.
 

@@ -38,6 +38,7 @@ header h1 { font-size: 17px; margin: 0 8px 0 0; }
 .pill.paper .dot { background: var(--paper); } .pill.live { color: var(--live); border-color: var(--live); }
 .pill.live .dot { background: var(--live); } .pill.open .dot { background: var(--paper); }
 .busy { color: var(--ink-2); font-size: 13px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.busy[hidden] { display: none; }
 .busy span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46vw; }
 .spinner { width: 14px; height: 14px; border: 2px solid var(--grid); border-top-color: var(--accent);
   border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
@@ -115,7 +116,7 @@ td.num, th.num { text-align: right; }
 .center { max-width: 520px; margin: 40px auto; }
 label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; align-content: start; }
 label small { font-weight: 400; color: var(--muted); }
-input[type=text], input[type=password], input[type=number], select, textarea {
+input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--axis); border-radius: 8px; background: var(--raised); }
 textarea { min-height: 70px; resize: vertical; }
 .form { display: grid; gap: 12px; }
@@ -134,7 +135,65 @@ legend { font-weight: 700; padding: 0 6px; }
 .msg.err { color: var(--down); } .msg.ok { color: var(--up); }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--page);
   padding: 10px 16px; border-radius: 10px; font-size: 13px; z-index: 20; display: none; max-width: 90vw; }
+nav#nav { display: flex; gap: 2px; margin-left: 6px; }
+nav#nav a { padding: 6px 10px; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-weight: 600; }
+nav#nav a:hover { background: var(--grid); }
+nav#nav a[aria-current="page"] { background: var(--grid); color: var(--ink); }
+.search { position: relative; }
+.search input { width: 240px; padding: 6px 10px; border: 1px solid var(--axis); border-radius: 8px; background: var(--raised); }
+.sr-list { position: absolute; top: 38px; left: 0; width: 360px; max-width: 90vw; background: var(--raised); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); z-index: 10; overflow: hidden; }
+.sr-row { display: grid; grid-template-columns: 70px 1fr auto; gap: 8px; width: 100%; text-align: left; padding: 8px 12px;
+  border: 0; background: none; cursor: pointer; align-items: center; }
+.sr-row:hover { background: var(--grid); } .sr-row span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.nokeys .view { display: none !important; }
+.view { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.view[hidden] { display: none; }
+a { color: var(--accent); }
+.hint { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+.muted { color: var(--muted); }
+table.click tbody tr { cursor: pointer; } table.click tbody tr:hover, table.click tbody tr:focus { background: var(--grid); outline: none; }
+td.name { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+tr.leg td { color: var(--muted); font-size: 12px; padding-top: 2px; }
+.sym-head { display: grid; gap: 8px; }
+.sym-head .back { font-size: 13px; text-decoration: none; }
+.sym-title { margin: 0; font-size: 22px; }
+.logo { width: 44px; height: 44px; border-radius: 10px; object-fit: contain; background: #fff; border: 1px solid var(--border); }
+.price-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.price-row .big { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sym-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.sym-main, .sym-side { display: grid; gap: 16px; min-width: 0; }
+.sym-side { position: sticky; top: 76px; }
+.studies { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 6px; font-size: 13px; }
+.study { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; cursor: pointer; }
+.study .key { width: 14px; height: 2px; display: inline-block; }
+.chart-box { position: relative; }
+.main-chart { height: 420px; }
+.sub-chart { height: 140px; margin-top: 6px; border-top: 1px solid var(--border); }
+.ohlc { position: absolute; z-index: 2; top: 6px; left: 8px; display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; pointer-events: none; background: color-mix(in srgb, var(--surface) 80%, transparent); padding: 2px 6px; border-radius: 6px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 16px; }
+.stat { display: grid; gap: 2px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.stat span { color: var(--muted); font-size: 12px; } .stat b { font-variant-numeric: tabular-nums; }
+.about { line-height: 1.6; margin-top: 0; }
+dl.profile { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 8px; font-size: 13px; }
+dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap: anywhere; }
+.news { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.news img { width: 96px; height: 64px; object-fit: cover; border-radius: 8px; }
+.news-h a { color: var(--ink); font-weight: 600; text-decoration: none; } .news-h a:hover { text-decoration: underline; }
+.news-s { margin: 4px 0 0; color: var(--ink-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ticket h2 { margin-bottom: 8px; }
+.seg.full { display: flex; } .seg.full button { flex: 1; padding: 7px; font-weight: 600; }
+.review { border: 1px solid var(--accent); border-radius: 10px; padding: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.chip { border: 1px solid var(--border); background: var(--raised); border-radius: 999px; padding: 5px 12px; cursor: pointer; font-weight: 600; font-size: 13px; }
+.chip:hover { border-color: var(--accent); }
+.two-eq { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.two-eq h3 { margin: 0 0 6px; font-size: 14px; }
+@media (max-width: 1100px) { .sym-grid { grid-template-columns: minmax(0, 1fr); } .sym-side { position: static; } .search input { width: 180px; } }
 @media (max-width: 900px) {
+  .two-eq { grid-template-columns: minmax(0, 1fr); }
+  nav#nav { order: 10; width: 100%; margin: 0; overflow-x: auto; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two { grid-template-columns: minmax(0, 1fr); }
   header, main { padding-left: 16px; padding-right: 16px; }
@@ -149,6 +208,10 @@ legend { font-weight: 700; padding: 0 6px; }
   <h1>Trader HQ</h1>
   <span id="modePill" class="pill"><span class="dot"></span><span>…</span></span>
   <span id="marketPill" class="pill"><span class="dot"></span><span>…</span></span>
+  <nav id="nav" aria-label="Sections">
+    <a href="#bot" data-view="bot">Bot</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a>
+  </nav>
+  <div class="search"><input type="search" id="symSearch" placeholder="Search symbol or company" autocomplete="off" aria-label="Search symbol or company"><div id="symResults" class="sr-list" hidden></div></div>
   <div id="busy" class="busy" hidden><div class="spinner" aria-hidden="true"></div><span></span></div>
   <div class="spacer"></div>
   <button class="btn" id="settingsBtn" type="button">Settings</button>
@@ -181,6 +244,7 @@ legend { font-weight: 700; padding: 0 6px; }
     </form>
   </section>
 
+  <div id="view-bot" class="view">
   <div id="dash" hidden>
     <section class="tiles" aria-label="Account summary">
       <div class="card tile"><div class="label">Account value</div><div class="value" id="tEquity">–</div><div class="sub" id="tEquitySub"></div></div>
@@ -246,6 +310,11 @@ legend { font-weight: 700; padding: 0 6px; }
       <div id="tab-history" class="log" hidden></div>
     </section>
   </div>
+  </div>
+  <div id="view-markets" class="view" hidden></div>
+  <div id="view-scanner" class="view" hidden></div>
+  <div id="view-orders" class="view" hidden></div>
+  <div id="view-symbol" class="view" hidden></div>
 </main>
 
 <dialog id="settingsDlg">
@@ -271,6 +340,14 @@ legend { font-weight: 700; padding: 0 6px; }
         <label>Anthropic API key <small>Optional. Not needed if you're signed in to Claude Code on this Mac.</small>
           <input type="password" name="key" autocomplete="off" placeholder="sk-ant-…"></label>
         <div class="row"><button class="btn" type="submit">Save API key</button><span class="msg" id="claudeMsg"></span></div>
+      </form>
+    </fieldset>
+    <fieldset>
+      <legend>Company data (optional)</legend>
+      <form class="form" id="finnhubForm">
+        <label>Finnhub API key <small>Optional and free at finnhub.io. Adds company logos, dividend yield and beta on stock pages.</small>
+          <input type="password" name="key" autocomplete="off"></label>
+        <div class="row"><button class="btn" type="submit">Save Finnhub key</button><span class="msg" id="finnhubMsg"></span></div>
       </form>
     </fieldset>
   </div>
@@ -343,6 +420,7 @@ function render() {
   $("setup").hidden = !needKeys; $("setupMode").textContent = S.mode;
   $("liveGate").hidden = !needLive;
   $("dash").hidden = needKeys || needLive;
+  document.body.classList.toggle("nokeys", needKeys);
 
   const b = $("busy"); b.hidden = !S.busy; b.lastChild.textContent = S.busy || "";
   const mk = $("marketPill");
@@ -435,7 +513,8 @@ function renderPositions() {
     el("thead", {}, el("tr", {}, el("th", {}, "Holding"), el("th", {class: "num"}, "Qty"), el("th", {class: "num"}, "Avg cost"),
       el("th", {class: "num"}, "Price"), el("th", {class: "num"}, "Value"), el("th", {class: "num"}, "Profit / loss"))),
     el("tbody", {}, rows.map((p) => el("tr", {},
-      el("td", {}, p.name, p.kind === "option" ? el("span", {class: "tag", style: "margin-left:6px"}, "option") : null),
+      el("td", {}, p.kind === "stock" && /^[A-Z.]{1,10}$/.test(p.symbol) ? el("a", {href: "#s/" + encodeURIComponent(p.symbol)}, p.name) : p.name,
+        p.kind === "option" ? el("span", {class: "tag", style: "margin-left:6px"}, "option") : null),
       el("td", {class: "num"}, p.qty + (p.kind === "option" ? " ct" : " sh")),
       el("td", {class: "num"}, money(p.avg_entry_price)), el("td", {class: "num"}, money(p.current_price)),
       el("td", {class: "num"}, money(p.market_value)),
@@ -546,15 +625,21 @@ const LABELS = {
   min_days_to_expiry: ["Minimum days to expiry", ""], max_days_to_expiry: ["Maximum days to expiry", ""],
   close_days_before_expiry: ["Offer to sell this many days before expiry", ""],
   max_spread_pct: ["Skip contracts with a bid/ask gap over (%)", ""],
+  data_feed: ["Price data feed", "IEX is free and real-time for one exchange. SIP covers all exchanges and needs a paid Alpaca data plan."],
+  max_manual_order_usd: ["Largest buy you place yourself ($)", "For the order ticket on stock and crypto pages."],
+  confirm_manual_orders: ["Review step before sending orders", "Turn off for one-click orders on paper. Always on in live mode."],
+  sec_contact_email: ["Your email for SEC data (optional)", "The SEC asks apps that read its data to include a contact email. Only sent to sec.gov."],
   "day.watchlist": ["Day-trading watchlist", "Symbols day trading may buy, separated by commas."],
   "day.strategy": ["Day-trading strategy", "Your instructions to Claude for day trades, in plain English."],
   "options.watchlist": ["Options watchlist", "Stocks/ETFs whose calls and puts may be bought."],
   "options.strategy": ["Options strategy", "Your instructions to Claude for calls and puts, in plain English."],
 };
-const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"]];
+const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"], ["Markets & order ticket", "market"]];
 function field(name, def, val, section) {
   const [label, help] = LABELS[(section ? section + "." : "") + name] || LABELS[name] || [name, ""];
   const lab = (input) => el("label", {}, label, help ? el("small", {}, help) : null, input);
+  if (name === "data_feed") return lab(el("select", {name}, el("option", {value: "iex", selected: val === "iex"}, "IEX (free)"), el("option", {value: "sip", selected: val === "sip"}, "SIP, all exchanges (paid plan)")));
+  if (name === "sec_contact_email") return lab(el("input", {type: "text", name, value: val, autocomplete: "email"}));
   if (name === "mode") return lab(el("select", {name}, el("option", {value: "paper", selected: val === "paper"}, "Paper (practice money)"), el("option", {value: "live", selected: val === "live"}, "Live (real money)")));
   if (typeof def === "boolean") return el("label", {class: "check"}, el("input", {type: "checkbox", name, checked: !!val}), el("span", {}, label, help ? el("small", {style: "display:block"}, help) : null));
   if (typeof def === "number") return lab(el("input", {type: "number", name, value: val, min: 0, step: "any"}));
@@ -604,6 +689,11 @@ $("keysForm").onsubmit = async (e) => {
   try { await api("/api/keys", {mode: f.mode.value, key: f.key.value, secret: f.secret.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; refresh(); }
   catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
 };
+$("finnhubForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, msg = $("finnhubMsg");
+  try { await api("/api/finnhub-key", {key: f.key.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved. Company pages will use it from now on."; }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
 $("claudeForm").onsubmit = async (e) => {
   e.preventDefault(); const f = e.target, msg = $("claudeMsg");
   try { await api("/api/anthropic-key", {key: f.key.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; refresh(); }
@@ -651,5 +741,7 @@ setInterval(refresh, 4000);
 setInterval(() => { if (S && S.day) renderDay(); }, 1000);
 setInterval(loadChart, 120000);
 </script>
+<script src="/vendor/lightweight-charts.js"></script>
+<script src="/market.js"></script>
 </body>
 </html>

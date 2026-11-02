@@ -97,6 +97,13 @@ DEFAULT_SETTINGS = {
         "close_days_before_expiry": 2,      # offer to sell options this close to expiry
         "max_spread_pct": 15,               # skip contracts whose bid/ask gap is wider than this % of the price
     },
+    "market": {
+        # The dashboard's charts, screeners and the order ticket for trades you place yourself.
+        "data_feed": "iex",                 # "iex" is free; "sip" (all exchanges) needs a paid Alpaca data plan
+        "max_manual_order_usd": 1000,       # largest buy you can place yourself from the order ticket
+        "confirm_manual_orders": True,      # show a review step before sending (always on in live mode)
+        "sec_contact_email": "",            # optional: SEC asks data users for a contact email
+    },
 }
 
 
@@ -119,12 +126,14 @@ def load_settings():
     s = copy.deepcopy(DEFAULT_SETTINGS)
     if SETTINGS_FILE.exists():
         saved = json.loads(SETTINGS_FILE.read_text())
-        sections = {k: saved.pop(k, {}) for k in ("day", "options")}
+        sections = {k: saved.pop(k, {}) for k in ("day", "options", "market")}
         s.update(saved)
         for k, v in sections.items():
             s[k].update(v)
     for section in (s, s["day"], s["options"]):
         section["watchlist"] = [str(x).upper().strip() for x in section["watchlist"] if str(x).strip()]
+    if s["market"]["data_feed"] not in ("iex", "sip"):
+        s["market"]["data_feed"] = "iex"
     if s["mode"] not in ENDPOINTS:
         raise RuntimeError(f'"mode" in {SETTINGS_FILE} must be "paper" or "live".')
     return s
