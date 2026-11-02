@@ -283,6 +283,19 @@ class InstallAppTests(unittest.TestCase):
         self.assertIn("PY='/Users/Alex/My Folder/.venv/bin/python'", text)
         self.assertIn("trader.py app --no-open", text)
         self.assertIn("<string>TraderHQ</string>", (app / "Contents" / "Info.plist").read_text())
+        self.assertIn("couldn", text)  # explains a failed start instead of opening a dead page
+
+    def test_refuses_folders_macos_protects(self):
+        home = Path(tempfile.mkdtemp())
+        for name in ("Desktop", "Documents", "Downloads"):
+            folder = home / name / "Trader-HQ"
+            folder.mkdir(parents=True)
+            with self.assertRaises(RuntimeError) as e:
+                D.install_app(desktop=home, here=folder, home=home)
+            self.assertIn("mv ", str(e.exception))
+        ok = home / "Trader-HQ"
+        ok.mkdir()
+        self.assertTrue(D.install_app(desktop=home, here=ok, home=home).exists())
 
 
 if __name__ == "__main__":

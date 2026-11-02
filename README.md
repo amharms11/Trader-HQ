@@ -42,6 +42,8 @@ Trader HQ has a dashboard that runs the bot in its own window:
 - Tabs for positions, open orders (with Cancel), activity and history
 - **Settings** for every limit and strategy, plus your Alpaca keys and an optional Anthropic API key
 
+**Keep the Trader-HQ folder in your home folder** (for example `~/Trader-HQ`), not on the Desktop or in Documents or Downloads. macOS doesn't let a double-clicked app read those three folders, so the icon couldn't start the bot.
+
 **Set it up once** (in Terminal, inside the Trader HQ folder):
 ```bash
 source .venv/bin/activate

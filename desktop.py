@@ -573,6 +573,10 @@ fi
 if ! curl -s -o /dev/null "$URL/api/ping"; then
   cd "$DIR" && nohup "$PY" trader.py app --no-open >> "$LOG" 2>&1 &
   for i in $(seq 1 75); do curl -s -o /dev/null "$URL/api/ping" && break; sleep 0.2; done
+  if ! curl -s -o /dev/null "$URL/api/ping"; then
+    osascript -e 'display alert "Trader HQ couldn'"'"'t start" message "The details are in the file .amh-trader/app.log in your home folder. Open Terminal and run: cat ~/.amh-trader/app.log"'
+    exit 1
+  fi
 fi
 if [ -d "/Applications/Google Chrome.app" ]; then
   open -na "Google Chrome" --args --app="$URL" --window-size=1400,950
@@ -601,8 +605,31 @@ def shell_quote(path):
     return "'" + str(path).replace("'", "'\\''") + "'"
 
 
-def install_app(desktop=None, python=None):
+PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")
+
+
+def protected_folder(folder, home=None):
+    """macOS won't let a double-clicked app read these folders, so the bot can't live in them."""
+    home = Path(home or Path.home()).resolve()
+    folder = Path(folder).resolve()
+    for name in PROTECTED:
+        root = home / name
+        if folder == root or root in folder.parents:
+            return name
+    return None
+
+
+def install_app(desktop=None, python=None, here=None, home=None):
     """Create 'Trader HQ.app' on the Desktop. It runs this folder's copy of the bot with this Python."""
+    here = Path(here or HERE)
+    blocked = protected_folder(here, home)
+    if blocked:
+        raise RuntimeError(
+            f"This folder is inside your {blocked} folder, which macOS doesn't let a double-clicked app read.\n"
+            "Move it to your home folder and set it up again by pasting these lines one at a time:\n\n"
+            f"  deactivate\n  mv {shell_quote(here)} ~/Trader-HQ\n  cd ~/Trader-HQ\n  rm -rf .venv\n"
+            "  python3 -m venv .venv\n  source .venv/bin/activate\n  pip install -r requirements.txt\n"
+            "  python trader.py install-app")
     desktop = Path(desktop) if desktop else Path.home() / "Desktop"
     app = desktop / "Trader HQ.app"
     if app.exists():
@@ -611,7 +638,7 @@ def install_app(desktop=None, python=None):
     macos.mkdir(parents=True)
     (app / "Contents" / "Info.plist").write_text(PLIST)
     launcher = macos / "TraderHQ"
-    launcher.write_text(LAUNCHER.format(dir=shell_quote(HERE), python=shell_quote(python or sys.executable), port=PORT))
+    launcher.write_text(LAUNCHER.format(dir=shell_quote(here), python=shell_quote(python or sys.executable), port=PORT))
     launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     print(f'Created "{app}". Double-click it to open the dashboard.')
     print("If you move this folder later, run `python trader.py install-app` again from its new place.")
