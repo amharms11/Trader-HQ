@@ -276,11 +276,11 @@ class ServerTests(Base):
 class InstallAppTests(unittest.TestCase):
     def test_creates_double_clickable_app(self):
         desk = Path(tempfile.mkdtemp())
-        app = D.install_app(desktop=desk, python="/Users/Alex/My Folder/.venv/bin/python")
+        app = D.install_app(desktop=desk, python="/Users/someone/My Folder/.venv/bin/python")
         launcher = app / "Contents" / "MacOS" / "TraderHQ"
         self.assertTrue(os.access(launcher, os.X_OK))
         text = launcher.read_text()
-        self.assertIn("PY='/Users/Alex/My Folder/.venv/bin/python'", text)
+        self.assertIn("PY='/Users/someone/My Folder/.venv/bin/python'", text)
         self.assertIn("trader.py app --no-open", text)
         self.assertIn("<string>TraderHQ</string>", (app / "Contents" / "Info.plist").read_text())
         self.assertIn("couldn", text)  # explains a failed start instead of opening a dead page
