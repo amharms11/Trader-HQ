@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trader HQ</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --page: #f9f9f7; --surface: #fcfcfb; --raised: #ffffff;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series: #2a78d6; --accent: #2a78d6; --accent-ink: #ffffff;
+  --up: #006300; --down: #d03b3b; --warn-bg: #fff4dc; --warn-ink: #6b4a00;
+  --live: #d03b3b; --paper: #0ca30c;
+  --shadow: 0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0d0d0d; --surface: #1a1a19; --raised: #222221;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series: #3987e5; --accent: #3987e5; --accent-ink: #ffffff;
+    --up: #0ca30c; --down: #e5605f; --warn-bg: #3a2e12; --warn-ink: #f3d48a;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 17px; margin: 0 8px 0 0; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; border: 1px solid var(--border); color: var(--ink-2); }
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.paper .dot { background: var(--paper); } .pill.live { color: var(--live); border-color: var(--live); }
+.pill.live .dot { background: var(--live); } .pill.open .dot { background: var(--paper); }
+.busy { color: var(--ink-2); font-size: 13px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.busy span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46vw; }
+.spinner { width: 14px; height: 14px; border: 2px solid var(--grid); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spacer { flex: 1; }
+.btn { border: 1px solid var(--border); background: var(--raised); padding: 7px 14px; border-radius: 8px;
+  cursor: pointer; font-weight: 600; box-shadow: var(--shadow); }
+.btn:hover { border-color: var(--axis); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.btn.danger { color: var(--down); }
+.btn.small { padding: 4px 10px; font-size: 13px; }
+main { max-width: 1280px; margin: 0 auto; padding: 18px 20px 60px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+#dash { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+#dash[hidden] { display: none; }
+.banner { padding: 10px 14px; border-radius: 10px; background: var(--warn-bg); color: var(--warn-ink); }
+.banner.live { background: var(--live); color: #fff; font-weight: 600; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  box-shadow: var(--shadow); min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 12px; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.tile .label { color: var(--ink-2); font-size: 13px; }
+.tile .value { font-size: 26px; font-weight: 650; margin-top: 4px; }
+.tile .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.up { color: var(--up); } .down { color: var(--down); }
+.two { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 4px 10px; cursor: pointer; color: var(--ink-2); }
+.seg button[aria-pressed="true"] { background: var(--grid); color: var(--ink); font-weight: 600; }
+.chart-wrap { position: relative; height: 260px; margin-top: 8px; }
+.chart-wrap svg { width: 100%; height: 100%; display: block; }
+.chart-wrap .axis-text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tip { position: absolute; pointer-events: none; background: var(--raised); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.12); display: none;
+  white-space: nowrap; }
+.tip strong { display: block; font-size: 14px; }
+.tip .k { display: inline-block; width: 12px; height: 2px; background: var(--series); vertical-align: middle; margin-right: 6px; }
+.empty { color: var(--muted); padding: 24px 0; text-align: center; }
+.actions { display: grid; gap: 14px; }
+.action { border-top: 1px solid var(--border); padding-top: 12px; }
+.action:first-child { border-top: 0; padding-top: 0; }
+.action h3 { margin: 0 0 2px; font-size: 14px; }
+.action p { margin: 0 0 8px; color: var(--ink-2); font-size: 13px; }
+.plan { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.plan:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+.plan-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tag { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: var(--grid); color: var(--ink-2); }
+.outlook { margin: 6px 0 10px; color: var(--ink-2); }
+.note { font-size: 13px; color: var(--warn-ink); background: var(--warn-bg); padding: 6px 10px; border-radius: 8px; margin-bottom: 10px; }
+.proposals { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 12px; }
+.prop { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--raised); display: grid; gap: 6px; align-content: start; }
+.prop.pending { border-color: var(--accent); }
+.prop h4 { margin: 0; font-size: 14px; }
+.prop .why, .prop .risk { font-size: 13px; color: var(--ink-2); }
+.prop .why b, .prop .risk b { color: var(--ink); }
+.prop .q { font-size: 13px; font-weight: 600; }
+.prop .status { font-size: 13px; font-weight: 600; }
+.prop .status.blocked, .prop .status.failed { color: var(--down); }
+.prop .status.placed { color: var(--up); }
+.prop .status.skipped, .prop .status.expired { color: var(--muted); }
+.countdown { font-size: 12px; color: var(--muted); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: -4px 0 12px; }
+.tabs button { border: 0; background: none; padding: 8px 12px; cursor: pointer; color: var(--ink-2);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 600; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+td { padding: 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+td.num, th.num { text-align: right; }
+.scroll { overflow-x: auto; }
+.log { max-height: 360px; overflow: auto; font-size: 13px; }
+.log div { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.log time { color: var(--muted); margin-right: 8px; font-variant-numeric: tabular-nums; }
+.center { max-width: 520px; margin: 40px auto; }
+label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; align-content: start; }
+label small { font-weight: 400; color: var(--muted); }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--axis); border-radius: 8px; background: var(--raised); }
+textarea { min-height: 70px; resize: vertical; }
+.form { display: grid; gap: 12px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; }
+.check input { margin-top: 3px; }
+dialog { border: 1px solid var(--border); border-radius: 14px; padding: 0; width: min(860px, 94vw);
+  background: var(--surface); color: var(--ink); max-height: 90vh; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+.dlg-head { display: flex; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.dlg-head h2 { margin: 0; font-size: 16px; flex: 1; }
+.dlg-body { padding: 18px; display: grid; gap: 20px; }
+fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px 14px; margin: 0; }
+legend { font-weight: 700; padding: 0 6px; }
+.msg { font-size: 13px; }
+.msg.err { color: var(--down); } .msg.ok { color: var(--up); }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--page);
+  padding: 10px 16px; border-radius: 10px; font-size: 13px; z-index: 20; display: none; max-width: 90vw; }
+@media (max-width: 900px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .two { grid-template-columns: minmax(0, 1fr); }
+  header, main { padding-left: 16px; padding-right: 16px; }
+  .tile .value { font-size: 20px; }
+  .busy span { max-width: 70vw; }
+}
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trader HQ</h1>
+  <span id="modePill" class="pill"><span class="dot"></span><span>…</span></span>
+  <span id="marketPill" class="pill"><span class="dot"></span><span>…</span></span>
+  <div id="busy" class="busy" hidden><div class="spinner" aria-hidden="true"></div><span></span></div>
+  <div class="spacer"></div>
+  <button class="btn" id="settingsBtn" type="button">Settings</button>
+  <button class="btn" id="quitBtn" type="button" title="Stop the bot and close the dashboard">Quit</button>
+</header>
+
+<main id="app">
+  <div id="banners"></div>
+
+  <!-- shown when keys are missing -->
+  <section id="setup" class="card center" hidden>
+    <h2>Connect your Alpaca account</h2>
+    <p>Paste your <b id="setupMode">paper</b> API keys from <b>app.alpaca.markets</b> → API Keys → Generate New Keys.</p>
+    <form class="form" id="setupForm">
+      <label>API Key ID <input type="text" name="key" autocomplete="off" spellcheck="false" required></label>
+      <label>API Secret <input type="password" name="secret" autocomplete="off" required></label>
+      <button class="btn primary" type="submit">Connect</button>
+      <div class="msg" id="setupMsg"></div>
+    </form>
+  </section>
+
+  <!-- shown in live mode until LIVE is typed -->
+  <section id="liveGate" class="card center" hidden>
+    <h2>Live mode: real money</h2>
+    <p>Orders you approve will use <b>real money</b>. Every order still needs your approval. To go back to paper, open Settings.</p>
+    <form class="form" id="liveForm">
+      <label>Type LIVE to continue <input type="text" name="text" autocomplete="off" spellcheck="false"></label>
+      <button class="btn primary" type="submit">Continue in live mode</button>
+      <div class="msg" id="liveMsg"></div>
+    </form>
+  </section>
+
+  <div id="dash" hidden>
+    <section class="tiles" aria-label="Account summary">
+      <div class="card tile"><div class="label">Account value</div><div class="value" id="tEquity">–</div><div class="sub" id="tEquitySub"></div></div>
+      <div class="card tile"><div class="label">Today</div><div class="value" id="tToday">–</div><div class="sub" id="tTodaySub"></div></div>
+      <div class="card tile"><div class="label">Cash</div><div class="value" id="tCash">–</div><div class="sub">available to buy with</div></div>
+      <div class="card tile"><div class="label">Options (paid)</div><div class="value" id="tOpts">–</div><div class="sub" id="tOptsSub"></div></div>
+    </section>
+
+    <div class="two">
+      <section class="card">
+        <div class="row"><h2 style="margin:0;flex:1">Account value</h2>
+          <div class="seg" role="group" aria-label="Time range" id="periods">
+            <button type="button" data-p="1W" aria-pressed="false">1W</button>
+            <button type="button" data-p="1M" aria-pressed="true">1M</button>
+            <button type="button" data-p="3M" aria-pressed="false">3M</button>
+            <button type="button" data-p="1Y" aria-pressed="false">1Y</button>
+          </div>
+        </div>
+        <div class="chart-wrap" id="chartWrap"><svg id="chart" role="img" aria-label="Account value over time"></svg><div class="tip" id="tip"></div></div>
+        <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--ink-2);font-size:13px">Show as table</summary>
+          <div class="scroll" style="max-height:220px"><table id="chartTable"></table></div></details>
+      </section>
+
+      <section class="card actions" aria-label="Run the bot">
+        <h2 style="margin-bottom:0">Run the bot</h2>
+        <div class="action">
+          <h3>Long-term</h3>
+          <p>Claude reviews your watchlist and suggests a few buys or sells.</p>
+          <button class="btn primary" type="button" data-plan="run">Ask Claude for a plan</button>
+        </div>
+        <div class="action">
+          <h3>Calls &amp; puts</h3>
+          <p>Buys only, so a trade can't lose more than you paid.</p>
+          <button class="btn primary" type="button" data-plan="options">Ask Claude about options</button>
+        </div>
+        <div class="action">
+          <h3>Day trading</h3>
+          <p id="dayText">Checks the market every few minutes and sells everything before the close.</p>
+          <div class="row">
+            <button class="btn primary" type="button" id="dayStart">Start day trading</button>
+            <button class="btn" type="button" id="dayStop" hidden>Stop</button>
+            <button class="btn danger" type="button" id="flatten">Close day trades now</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="card" aria-live="polite">
+      <div class="row"><h2 style="margin:0;flex:1">Claude's suggestions</h2><span id="autoNote" class="tag" hidden>Auto-approve on (paper)</span></div>
+      <div id="plans" style="margin-top:12px"></div>
+    </section>
+
+    <section class="card">
+      <div class="tabs" role="tablist">
+        <button role="tab" type="button" data-tab="positions" aria-selected="true">Positions</button>
+        <button role="tab" type="button" data-tab="orders" aria-selected="false">Open orders</button>
+        <button role="tab" type="button" data-tab="activity" aria-selected="false">Activity</button>
+        <button role="tab" type="button" data-tab="history" aria-selected="false">History</button>
+      </div>
+      <div id="tab-positions" class="scroll"></div>
+      <div id="tab-orders" class="scroll" hidden></div>
+      <div id="tab-activity" class="log" hidden></div>
+      <div id="tab-history" class="log" hidden></div>
+    </section>
+  </div>
+</main>
+
+<dialog id="settingsDlg">
+  <div class="dlg-head"><h2>Settings</h2><button class="btn small" type="button" id="closeSettings">Close</button></div>
+  <div class="dlg-body">
+    <form id="settingsForm" class="form"></form>
+    <fieldset>
+      <legend>Alpaca keys</legend>
+      <form class="form" id="keysForm">
+        <div class="form-grid">
+          <label>Account <select name="mode"><option value="paper">Paper (PK…)</option><option value="live">Live (AK…)</option></select></label>
+          <label>API Key ID <input type="text" name="key" autocomplete="off" spellcheck="false"></label>
+          <label>API Secret <input type="password" name="secret" autocomplete="off"></label>
+        </div>
+        <div class="row"><button class="btn" type="submit">Save keys</button><span class="msg" id="keysMsg"></span></div>
+        <small style="color:var(--muted)">Saving live keys does not switch to live trading. That only happens if you set Trading mode to Live above.</small>
+      </form>
+    </fieldset>
+    <fieldset>
+      <legend>Claude</legend>
+      <p id="claudeStatus" class="msg" style="margin-top:0"></p>
+      <form class="form" id="claudeForm">
+        <label>Anthropic API key <small>Optional. Not needed if you're signed in to Claude Code on this Mac.</small>
+          <input type="password" name="key" autocomplete="off" placeholder="sk-ant-…"></label>
+        <div class="row"><button class="btn" type="submit">Save API key</button><span class="msg" id="claudeMsg"></span></div>
+      </form>
+    </fieldset>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let S = null;            // latest /api/state
+let period = "1M";
+let lastPending = 0;
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false)
+    n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return n;
+}
+const money = (x) => (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const money0 = (x) => (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", {maximumFractionDigits: 0});
+const signed = (x) => (x > 0 ? "+" : x < 0 ? "−" : "") + money(Math.abs(x)).replace("-", "");
+const pct = (x) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(2) + "%";
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-Trader-HQ": "1"}, body: JSON.stringify(body)};
+  const r = await fetch(path, opts);
+  let data = {};
+  try { data = await r.json(); } catch (_) {}
+  if (!r.ok) { const e = new Error(data.error || ("Error " + r.status)); e.needLive = data.need_live; throw e; }
+  return data;
+}
+function toast(text, ms) {
+  const t = $("toast"); t.textContent = text; t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", ms || 4000);
+}
+async function act(path, body, okText) {
+  try { await api(path, body); if (okText) toast(okText); await refresh(); }
+  catch (e) { toast(e.message, 7000); }
+}
+
+// ---------- state ----------
+async function refresh() {
+  try { S = await api("/api/state"); }
+  catch (e) { renderOffline(e.message); return; }
+  render();
+}
+function renderOffline(msg) {
+  $("banners").replaceChildren(el("div", {class: "banner"}, "Can't reach the bot: " + msg + ". If you pressed Quit, open Trader HQ from your Desktop again."));
+}
+function render() {
+  const live = S.mode === "live";
+  const mp = $("modePill"); mp.className = "pill " + (live ? "live" : "paper");
+  mp.lastChild.textContent = live ? "LIVE · real money" : "PAPER · practice money";
+  const banners = [];
+  if (live && S.live_ok) banners.push(el("div", {class: "banner live"}, "Live mode: approved orders use real money."));
+  if (S.error) banners.push(el("div", {class: "banner"}, S.error));
+  if (!S.claude) banners.push(el("div", {class: "banner"}, "Claude isn't connected yet. Sign in to Claude Code on this Mac (run claude once in Terminal), or add an API key in Settings."));
+  $("banners").replaceChildren(...banners);
+
+  const needKeys = !S.has_keys[S.mode];
+  const needLive = !needKeys && live && !S.live_ok;
+  $("setup").hidden = !needKeys; $("setupMode").textContent = S.mode;
+  $("liveGate").hidden = !needLive;
+  $("dash").hidden = needKeys || needLive;
+
+  const b = $("busy"); b.hidden = !S.busy; b.lastChild.textContent = S.busy || "";
+  const mk = $("marketPill");
+  if (S.clock) { mk.className = "pill " + (S.clock.is_open ? "open" : ""); mk.lastChild.textContent = (S.clock.is_open ? "Market open · " : "Market closed · ") + S.clock.now_et; }
+  else { mk.className = "pill"; mk.lastChild.textContent = "Market –"; }
+  if ($("dash").hidden) return;
+
+  renderTiles(); renderDay(); renderPlans(); renderPositions(); renderOrders(); renderActivity();
+  document.querySelectorAll("[data-plan]").forEach((x) => x.disabled = !!S.busy);
+}
+
+function renderTiles() {
+  const a = S.account; if (!a) return;
+  $("tEquity").textContent = money(a.equity);
+  $("tEquitySub").textContent = S.mode === "live" ? "real money" : "simulated money";
+  const d = a.equity - a.last_equity, dp = a.last_equity ? d / a.last_equity * 100 : 0;
+  const t = $("tToday"); t.textContent = (d > 0 ? "▲ " : d < 0 ? "▼ " : "") + signed(d);
+  t.className = "value " + (d > 0 ? "up" : d < 0 ? "down" : "");
+  $("tTodaySub").textContent = pct(dp) + " since yesterday's close";
+  $("tCash").textContent = money(a.cash);
+  $("tOpts").textContent = money(a.options_paid);
+  $("tOptsSub").textContent = "limit " + money0(a.options_cap) + " (the most options can lose)";
+}
+
+function renderDay() {
+  const d = S.day;
+  $("dayStart").hidden = d.running; $("dayStop").hidden = !d.running;
+  let text = "Checks the market every few minutes and sells everything before the close.";
+  if (d.running) {
+    const secs = d.next_check ? Math.max(0, Math.round(d.next_check - Date.now() / 1000)) : null;
+    text = "Running. " + (secs !== null ? "Next check in " + Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0") + ". " : "Checking now. ") +
+      d.entries_today + " day trade(s) opened today.";
+  } else if (d.flattened) text = "Finished for today: day positions were closed.";
+  $("dayText").textContent = text;
+}
+
+const STATUS_TEXT = {pending: "", placed: "Placed", skipped: "Skipped", expired: "Expired", blocked: "Blocked", failed: "Failed"};
+function renderPlans() {
+  $("autoNote").hidden = !S.auto_approve;
+  const box = $("plans");
+  if (!S.plans.length) { box.replaceChildren(el("div", {class: "empty"}, "No suggestions yet. Use the buttons above to ask Claude.")); return; }
+  const byPlan = {};
+  for (const p of S.proposals) (byPlan[p.plan_id] = byPlan[p.plan_id] || []).push(p);
+  const now = Date.now() / 1000;
+  const blocks = S.plans.slice(0, 6).map((plan) => {
+    const props = (byPlan[plan.id] || []).sort((a, b) => a.index - b.index);
+    return el("div", {class: "plan"},
+      el("div", {class: "plan-head"}, el("span", {class: "tag"}, plan.label), el("span", {style: "color:var(--muted);font-size:12px"}, new Date(plan.created * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}))),
+      el("p", {class: "outlook"}, plan.outlook || ""),
+      plan.note ? el("div", {class: "note"}, plan.note) : null,
+      plan.empty ? el("div", {style: "color:var(--muted);font-size:13px"}, plan.empty) : null,
+      props.length ? el("div", {class: "proposals"}, props.map((p) => propCard(p, now))) : null);
+  });
+  box.replaceChildren(...blocks);
+  const pending = S.proposals.filter((p) => p.status === "pending").length;
+  document.title = pending ? "(" + pending + ") Trader HQ" : "Trader HQ";
+  if (pending > lastPending && document.hidden && "Notification" in window && Notification.permission === "granted")
+    new Notification("Trader HQ", {body: pending + " suggestion(s) waiting for your approval"});
+  lastPending = pending;
+}
+function propCard(p, now) {
+  const kids = [el("h4", {}, p.headline),
+    el("div", {class: "why"}, el("b", {}, "Why: "), p.reason),
+    el("div", {class: "risk"}, el("b", {}, "Risk: "), p.risk)];
+  if (p.status === "pending") {
+    const left = Math.max(0, Math.round(p.expires - now));
+    kids.push(el("div", {class: "q"}, p.question),
+      el("div", {class: "row"},
+        el("button", {class: "btn primary small", type: "button", onclick: () => decide(p.id, true)}, "Approve"),
+        el("button", {class: "btn small", type: "button", onclick: () => decide(p.id, false)}, "Skip"),
+        el("span", {class: "countdown"}, "valid for " + (left >= 120 ? Math.floor(left / 60) + " min" : left + " s"))));
+  } else {
+    const detail = p.status === "blocked" ? p.why : p.result;
+    kids.push(el("div", {class: "status " + p.status}, STATUS_TEXT[p.status] + (detail ? ": " + detail : "")));
+  }
+  return el("div", {class: "prop " + p.status}, kids);
+}
+async function decide(id, approve) {
+  try {
+    const p = await api("/api/decide", {id, approve});
+    toast(p.status === "placed" ? "Order sent." : p.status === "blocked" ? "Blocked: " + p.why : STATUS_TEXT[p.status] + ".");
+  } catch (e) { toast(e.message, 7000); }
+  refresh();
+}
+
+function renderPositions() {
+  const rows = S.positions || [];
+  if (!rows.length) { $("tab-positions").replaceChildren(el("div", {class: "empty"}, "No positions yet.")); return; }
+  $("tab-positions").replaceChildren(el("table", {},
+    el("thead", {}, el("tr", {}, el("th", {}, "Holding"), el("th", {class: "num"}, "Qty"), el("th", {class: "num"}, "Avg cost"),
+      el("th", {class: "num"}, "Price"), el("th", {class: "num"}, "Value"), el("th", {class: "num"}, "Profit / loss"))),
+    el("tbody", {}, rows.map((p) => el("tr", {},
+      el("td", {}, p.name, p.kind === "option" ? el("span", {class: "tag", style: "margin-left:6px"}, "option") : null),
+      el("td", {class: "num"}, p.qty + (p.kind === "option" ? " ct" : " sh")),
+      el("td", {class: "num"}, money(p.avg_entry_price)), el("td", {class: "num"}, money(p.current_price)),
+      el("td", {class: "num"}, money(p.market_value)),
+      el("td", {class: "num " + (p.unrealized_pl > 0 ? "up" : p.unrealized_pl < 0 ? "down" : "")},
+        signed(p.unrealized_pl) + " (" + pct(p.unrealized_plpc) + ")"))))));
+}
+function renderOrders() {
+  const rows = S.orders || [];
+  if (!rows.length) { $("tab-orders").replaceChildren(el("div", {class: "empty"}, "No open orders.")); return; }
+  $("tab-orders").replaceChildren(el("table", {},
+    el("thead", {}, el("tr", {}, el("th", {}, "Order"), el("th", {}, "Type"), el("th", {class: "num"}, "Price"), el("th", {}, "Status"), el("th", {}, ""))),
+    el("tbody", {}, rows.map((o) => el("tr", {},
+      el("td", {}, o.side.toUpperCase() + " " + (o.qty || "") + " " + o.name),
+      el("td", {}, o.type), el("td", {class: "num"}, o.limit_price ? money(+o.limit_price) : o.stop_price ? "stop " + money(+o.stop_price) : "market"),
+      el("td", {}, o.status),
+      el("td", {}, el("button", {class: "btn small", type: "button", onclick: () => confirm("Cancel this order?") && act("/api/cancel-order", {id: o.id}, "Cancel requested.")}, "Cancel")))))));
+}
+function renderActivity() {
+  const rows = S.activity || [];
+  $("tab-activity").replaceChildren(...(rows.length ? rows.map((a) => el("div", {}, el("time", {}, a.time), a.text)) : [el("div", {class: "empty"}, "Nothing yet.")]));
+}
+async function loadHistory() {
+  try {
+    const h = await api("/api/history");
+    $("tab-history").replaceChildren(...(h.lines.length ? h.lines.map((l) => el("div", {}, l)) : [el("div", {class: "empty"}, "Nothing yet.")]));
+  } catch (e) { $("tab-history").replaceChildren(el("div", {class: "empty"}, e.message)); }
+}
+
+// ---------- chart ----------
+let points = [];
+async function loadChart() {
+  try { points = (await api("/api/equity?period=" + period)).points; } catch (_) { points = []; }
+  drawChart();
+}
+function niceTicks(min, max, n) {
+  const span = max - min || Math.abs(max) || 1, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= n) || 10 * mag;
+  const out = []; for (let v = Math.floor(min / step) * step; v <= max + step / 2; v += step) out.push(v);
+  return out;
+}
+function drawChart() {
+  const svg = $("chart"), wrap = $("chartWrap"), W = wrap.clientWidth, H = wrap.clientHeight;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H); svg.replaceChildren();
+  const ns = "http://www.w3.org/2000/svg", mk = (t, a) => { const n = document.createElementNS(ns, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
+  const table = $("chartTable");
+  table.replaceChildren(el("thead", {}, el("tr", {}, el("th", {}, "Date"), el("th", {class: "num"}, "Account value"))),
+    el("tbody", {}, points.slice().reverse().map((p) => el("tr", {}, el("td", {}, new Date(p.t * 1000).toLocaleString()), el("td", {class: "num"}, money(p.v))))));
+  if (points.length < 2) {
+    const t = mk("text", {x: W / 2, y: H / 2, "text-anchor": "middle", class: "axis-text"}); t.textContent = "Not enough history yet. Check back after a few trading days.";
+    svg.append(t); return;
+  }
+  const L = 64, R = 12, T = 10, B = 26, vs = points.map((p) => p.v);
+  let lo = Math.min(...vs), hi = Math.max(...vs); if (lo === hi) { lo -= 1; hi += 1; }
+  const ticks = niceTicks(lo, hi, 4); lo = Math.min(lo, ticks[0]); hi = Math.max(hi, ticks[ticks.length - 1]);
+  const x = (i) => L + (W - L - R) * i / (points.length - 1), y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  for (const tv of ticks) {
+    svg.append(mk("line", {x1: L, x2: W - R, y1: y(tv), y2: y(tv), stroke: "var(--grid)", "stroke-width": 1}));
+    const tx = mk("text", {x: L - 8, y: y(tv) + 4, "text-anchor": "end", class: "axis-text"}); tx.textContent = money0(tv); svg.append(tx);
+  }
+  svg.append(mk("line", {x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: "var(--axis)", "stroke-width": 1}));
+  const nLabels = Math.min(4, points.length);
+  for (let k = 0; k < nLabels; k++) {
+    const i = Math.round(k * (points.length - 1) / Math.max(1, nLabels - 1));
+    const tx = mk("text", {x: x(i), y: H - 8, "text-anchor": k === 0 ? "start" : k === nLabels - 1 ? "end" : "middle", class: "axis-text"});
+    tx.textContent = new Date(points[i].t * 1000).toLocaleDateString([], {month: "short", day: "numeric"}); svg.append(tx);
+  }
+  svg.append(mk("path", {d: points.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.v).toFixed(1)).join(""),
+    fill: "none", stroke: "var(--series)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}));
+  const hair = mk("line", {y1: T, y2: H - B, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden"});
+  const dot = mk("circle", {r: 4, fill: "var(--series)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden"});
+  const hit = mk("rect", {x: L, y: T, width: W - L - R, height: H - T - B, fill: "transparent"});
+  svg.append(hair, dot, hit);
+  const tip = $("tip");
+  const show = (clientX) => {
+    const r = svg.getBoundingClientRect(), px = clientX - r.left;
+    const i = Math.max(0, Math.min(points.length - 1, Math.round((px - L) / (W - L - R) * (points.length - 1))));
+    const p = points[i], cx = x(i), cy = y(p.v);
+    hair.setAttribute("x1", cx); hair.setAttribute("x2", cx); hair.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("visibility", "visible");
+    tip.replaceChildren(el("strong", {}, money(p.v)), el("span", {}, el("span", {class: "k"}), new Date(p.t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: period === "1W" ? "numeric" : undefined})));
+    tip.style.display = "block";
+    const tw = tip.offsetWidth; tip.style.left = Math.min(W - tw - 4, Math.max(4, cx + 12)) + "px"; tip.style.top = Math.max(0, cy - 48) + "px";
+  };
+  const hide = () => { hair.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); tip.style.display = "none"; };
+  hit.addEventListener("pointermove", (e) => show(e.clientX));
+  hit.addEventListener("pointerleave", hide);
+}
+
+// ---------- settings ----------
+const LABELS = {
+  mode: ["Trading mode", "Paper uses practice money. Live uses real money and asks you to type LIVE each time the app starts."],
+  watchlist: ["Long-term watchlist", "Symbols the long-term plan may buy, separated by commas."],
+  strategy: ["Long-term strategy", "Your instructions to Claude, in plain English."],
+  max_order_usd: ["Largest single order ($)", "Applies to long-term and day trades."],
+  max_position_pct: ["Max size of one stock (% of account)", ""],
+  max_orders_per_day: ["Long-term orders per day", ""],
+  daily_loss_stop_pct: ["Pause buying after a daily loss of (%)", ""],
+  limit_slippage_pct: ["Price cushion for orders (%)", "Limit price stays within this % of the last price."],
+  auto_approve: ["Auto-approve trades (paper only)", "Place trades that pass every limit without asking. Ignored in live mode."],
+  check_every_min: ["Check every (minutes)", ""], max_entries_per_day: ["Day trades per day", ""],
+  max_risk_per_trade_usd: ["Max loss per day trade ($)", "If its stop-loss is hit."],
+  max_stop_loss_pct: ["Widest stop-loss (%)", ""], max_take_profit_pct: ["Furthest profit target (%)", ""],
+  no_new_entries_min_before_close: ["No new day trades in the last (minutes)", ""],
+  flatten_min_before_close: ["Sell day trades this long before the close (minutes)", ""],
+  max_premium_per_trade_usd: ["Most one options order can cost ($)", "This is also the most it can lose."],
+  max_total_options_pct: ["All options together, max (% of account)", ""],
+  max_contracts_per_trade: ["Contracts per order", ""], max_trades_per_day: ["Options buys per day", ""],
+  min_days_to_expiry: ["Minimum days to expiry", ""], max_days_to_expiry: ["Maximum days to expiry", ""],
+  close_days_before_expiry: ["Offer to sell this many days before expiry", ""],
+  max_spread_pct: ["Skip contracts with a bid/ask gap over (%)", ""],
+  "day.watchlist": ["Day-trading watchlist", "Symbols day trading may buy, separated by commas."],
+  "day.strategy": ["Day-trading strategy", "Your instructions to Claude for day trades, in plain English."],
+  "options.watchlist": ["Options watchlist", "Stocks/ETFs whose calls and puts may be bought."],
+  "options.strategy": ["Options strategy", "Your instructions to Claude for calls and puts, in plain English."],
+};
+const SECTIONS = [["General", null], ["Day trading", "day"], ["Calls & puts", "options"]];
+function field(name, def, val, section) {
+  const [label, help] = LABELS[(section ? section + "." : "") + name] || LABELS[name] || [name, ""];
+  const lab = (input) => el("label", {}, label, help ? el("small", {}, help) : null, input);
+  if (name === "mode") return lab(el("select", {name}, el("option", {value: "paper", selected: val === "paper"}, "Paper (practice money)"), el("option", {value: "live", selected: val === "live"}, "Live (real money)")));
+  if (typeof def === "boolean") return el("label", {class: "check"}, el("input", {type: "checkbox", name, checked: !!val}), el("span", {}, label, help ? el("small", {style: "display:block"}, help) : null));
+  if (typeof def === "number") return lab(el("input", {type: "number", name, value: val, min: 0, step: "any"}));
+  if (Array.isArray(def)) return lab(el("input", {type: "text", name, value: val.join(", ")}));
+  return lab(el("textarea", {name}, val));
+}
+async function openSettings() {
+  const {settings, defaults} = await api("/api/settings");
+  const form = $("settingsForm");
+  const sets = SECTIONS.map(([title, key]) => {
+    const def = key ? defaults[key] : defaults, val = key ? settings[key] : settings;
+    const names = Object.keys(def).filter((k) => typeof def[k] !== "object" || Array.isArray(def[k]));
+    const wide = names.filter((k) => typeof def[k] === "string" && k !== "mode");
+    const small = names.filter((k) => !wide.includes(k));
+    return el("fieldset", {"data-section": key || ""}, el("legend", {}, title),
+      el("div", {class: "form-grid"}, small.map((k) => field(k, def[k], val[k], key))),
+      wide.map((k) => el("div", {style: "margin-top:12px"}, field(k, def[k], val[k], key))));
+  });
+  form.replaceChildren(...sets, el("div", {class: "row"}, el("button", {class: "btn primary", type: "submit"}, "Save settings"), el("span", {class: "msg", id: "settingsMsg"})));
+  form.dataset.defaults = JSON.stringify(defaults);
+  $("claudeStatus").textContent = S && S.claude ? "Claude is connected." : "Claude isn't connected yet.";
+  $("settingsDlg").showModal();
+}
+function readSettings() {
+  const defaults = JSON.parse($("settingsForm").dataset.defaults), out = {};
+  for (const fs of $("settingsForm").querySelectorAll("fieldset")) {
+    const key = fs.dataset.section, target = key ? (out[key] = {}) : out, def = key ? defaults[key] : defaults;
+    for (const input of fs.querySelectorAll("[name]")) {
+      const d = def[input.name];
+      target[input.name] = typeof d === "boolean" ? input.checked : input.value;
+    }
+  }
+  return out;
+}
+
+// ---------- wiring ----------
+$("settingsBtn").onclick = () => openSettings().catch((e) => toast(e.message, 7000));
+$("closeSettings").onclick = () => $("settingsDlg").close();
+$("settingsForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = $("settingsMsg");
+  try { await api("/api/settings", {settings: readSettings()}); msg.className = "msg ok"; msg.textContent = "Saved."; refresh(); }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
+$("keysForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, msg = $("keysMsg"); msg.className = "msg"; msg.textContent = "Checking with Alpaca…";
+  try { await api("/api/keys", {mode: f.mode.value, key: f.key.value, secret: f.secret.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; refresh(); }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
+$("claudeForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, msg = $("claudeMsg");
+  try { await api("/api/anthropic-key", {key: f.key.value}); f.reset(); msg.className = "msg ok"; msg.textContent = "Saved."; refresh(); }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
+$("setupForm").onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, msg = $("setupMsg"); msg.className = "msg"; msg.textContent = "Checking with Alpaca…";
+  try { await api("/api/keys", {mode: S.mode, key: f.key.value, secret: f.secret.value}); f.reset(); msg.textContent = ""; await refresh(); loadChart(); }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
+$("liveForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try { await api("/api/confirm-live", {text: e.target.text.value.trim()}); e.target.reset(); await refresh(); loadChart(); }
+  catch (err) { $("liveMsg").className = "msg err"; $("liveMsg").textContent = err.message; }
+};
+document.querySelectorAll("[data-plan]").forEach((btn) => btn.onclick = () => {
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+  act("/api/plan", {kind: btn.dataset.plan}, "Asking Claude. Suggestions will appear below in a minute or so.");
+});
+$("dayStart").onclick = () => {
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+  act("/api/day/start", {}, "Day trading started. Keep this window open to approve trades.");
+};
+$("dayStop").onclick = () => act("/api/day/stop", {}, "Day trading stopped.");
+$("flatten").onclick = () => confirm("Sell everything day trading bought today, at market price, now?") && act("/api/flatten", {}, "Closing day trades.");
+$("quitBtn").onclick = async () => {
+  if (!confirm("Quit Trader HQ? Day trading (if running) stops. Orders already placed stay with Alpaca.")) return;
+  try { await api("/api/quit", {}); } catch (_) {}
+  document.body.replaceChildren(el("main", {}, el("div", {class: "card center"}, el("h2", {}, "Trader HQ has stopped."), el("p", {}, "You can close this window. Open Trader HQ from your Desktop to start again."))));
+};
+document.querySelectorAll(".tabs button").forEach((t) => t.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", b === t));
+  for (const name of ["positions", "orders", "activity", "history"]) $("tab-" + name).hidden = name !== t.dataset.tab;
+  if (t.dataset.tab === "history") loadHistory();
+});
+$("periods").onclick = (e) => {
+  const p = e.target.dataset && e.target.dataset.p; if (!p) return;
+  period = p; document.querySelectorAll("#periods button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.p === p));
+  loadChart();
+};
+window.addEventListener("resize", () => drawChart());
+
+refresh().then(loadChart);
+setInterval(refresh, 4000);
+setInterval(() => { if (S && S.day) renderDay(); }, 1000);
+setInterval(loadChart, 120000);
+</script>
+</body>
+</html>

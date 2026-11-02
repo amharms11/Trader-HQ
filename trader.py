@@ -14,6 +14,8 @@ Commands:
   python trader.py options          # calls and puts: Claude proposes buys (and sells of ones you own)
   python trader.py flatten          # sell everything day trading bought today, right now
   python trader.py history          # every plan, approval, skip, block and order
+  python trader.py app              # open the desktop dashboard (runs the bot in a window)
+  python trader.py install-app      # put a "Trader HQ" icon on your Desktop that opens the dashboard
 
 Safety by design:
 - Paper unless you set "mode": "live" in settings.json AND type LIVE each time you start.
@@ -138,6 +140,41 @@ def key_names(mode):
     return f"ALPACA_{mode.upper()}_KEY_ID", f"ALPACA_{mode.upper()}_SECRET_KEY"
 
 
+def has_keys(mode):
+    load_config()
+    kid, _ = key_names(mode)
+    key = os.environ.get(kid) or (os.environ.get("ALPACA_API_KEY_ID", "") if mode == "paper" else "")
+    return key.startswith(KEY_PREFIX[mode])
+
+
+def save_keys(mode, key, secret):
+    """Check the keys with Alpaca, then save them. Returns the account. Raises ValueError if they're wrong."""
+    key, secret = key.strip(), secret.strip()
+    if not key.startswith(KEY_PREFIX[mode]):
+        raise ValueError(f"{mode.title()} keys start with {KEY_PREFIX[mode]}. Nothing saved.")
+    if not secret:
+        raise ValueError("The secret is empty. Nothing saved.")
+    kid, ksec = key_names(mode)
+    old = os.environ.get(kid), os.environ.get(ksec)
+    os.environ[kid], os.environ[ksec] = key, secret
+    try:
+        acct = Broker(mode).account()
+    except (RuntimeError, SystemExit) as e:
+        for name, value in zip((kid, ksec), old):  # put back whatever was there
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        raise ValueError(f"Alpaca didn't accept those keys ({e}). Nothing saved.") from None
+    keep = []
+    if CONFIG_FILE.exists():  # keep everything else, e.g. the other account's keys or ANTHROPIC_API_KEY
+        keep = [l for l in CONFIG_FILE.read_text().splitlines() if l.split("=", 1)[0].strip() not in (kid, ksec)]
+    save_private(CONFIG_FILE, "\n".join([f"{kid}={key}", f"{ksec}={secret}"] + keep) + "\n")
+    if not SETTINGS_FILE.exists():
+        save_private(SETTINGS_FILE, json.dumps(DEFAULT_SETTINGS, indent=2) + "\n")
+    return acct
+
+
 def setup(mode="paper"):
     if mode not in ENDPOINTS:
         sys.exit("Use `setup` for paper or `setup live` for a live account.")
@@ -151,17 +188,10 @@ def setup(mode="paper"):
         print("   Live keys start with AK. Saving them does NOT switch trading to live.\n")
     key = input("API Key ID: ").strip()
     secret = input("API Secret: ").strip()
-    if not key.startswith(KEY_PREFIX[mode]):
-        sys.exit(f"{mode.title()} keys start with {KEY_PREFIX[mode]}. Nothing saved.")
-    kid, ksec = key_names(mode)
-    keep = []
-    if CONFIG_FILE.exists():  # keep everything else, e.g. the other account's keys or ANTHROPIC_API_KEY
-        keep = [l for l in CONFIG_FILE.read_text().splitlines() if l.split("=", 1)[0].strip() not in (kid, ksec)]
-    save_private(CONFIG_FILE, "\n".join([f"{kid}={key}", f"{ksec}={secret}"] + keep) + "\n")
-    if not SETTINGS_FILE.exists():
-        save_private(SETTINGS_FILE, json.dumps(DEFAULT_SETTINGS, indent=2) + "\n")
-    os.environ[kid], os.environ[ksec] = key, secret
-    acct = Broker(mode).account()
+    try:
+        acct = save_keys(mode, key, secret)
+    except ValueError as e:
+        sys.exit(str(e))
     print(f"\nConnected to your {mode} account. Value: {money(acct['equity'])}")
     if mode == "live":
         print(f'Trading stays on paper. To trade real money later, set "mode": "live" in {SETTINGS_FILE};\n'
@@ -246,6 +276,12 @@ class Broker:
     def orders_today(self):
         start = dt.datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0)
         return self._api("/v2/orders", params={"status": "all", "after": start.isoformat(), "limit": 500})
+
+    def open_orders(self):
+        return self._api("/v2/orders", params={"status": "open", "limit": 100})
+
+    def portfolio_history(self, period="1M", timeframe="1D"):
+        return self._api("/v2/account/portfolio/history", params={"period": period, "timeframe": timeframe})
 
     def get_order(self, order_id):
         return self._api(f"/v2/orders/{order_id}", params={"nested": "true"})
@@ -790,7 +826,7 @@ def entry_order_ids(state, symbol=None):
     return ids
 
 
-def flatten(broker, state):
+def flatten(broker, state, progress=print):
     """Cancel day-trade orders and sell every share bought by day trading today."""
     cancel_and_wait(broker, entry_order_ids(state))
     sold = {}
@@ -798,15 +834,15 @@ def flatten(broker, state):
         try:
             broker.place_market_sell(sym, qty, f"amhx-{dt.datetime.now():%Y%m%d%H%M%S}-{sym}")
             sold[sym] = qty
-            print(f"  Sold {qty} {sym} at market.")
+            progress(f"  Sold {qty} {sym} at market.")
         except RuntimeError as e:
-            print(f"  Couldn't sell {sym}: {e}")
+            progress(f"  Couldn't sell {sym}: {e}")
             journal("flatten_failed", mode=broker.mode, symbol=sym, error=str(e))
     state["flattened"] = True
     save_day_state(broker.mode, state)
     journal("flatten", mode=broker.mode, sold=sold)
     if not sold:
-        print("  No day positions to close.")
+        progress("  No day positions to close.")
     return sold
 
 
@@ -1014,7 +1050,7 @@ def expiring_sells(snap, settings):
             for h in snap["options_held"] if h["side"] == "long" and h["days_to_expiry"] <= days]
 
 
-# ---------- commands ----------
+# ---------- trading rounds (shared by the terminal and the desktop app) ----------
 
 def money(x):
     x = float(x)
@@ -1028,6 +1064,200 @@ def journal(event, **data):
                             "event": event, **data}) + "\n")
 
 
+def minutes_until_close(clock):
+    now = dt.datetime.fromisoformat(clock["timestamp"].replace("Z", "+00:00"))
+    close = dt.datetime.fromisoformat(clock["next_close"].replace("Z", "+00:00"))
+    return int((close - now).total_seconds() // 60)
+
+
+class Notice(Exception):
+    """Nothing to do, with a plain-English reason (not an error)."""
+
+
+CLOSED_NOTE = ("The market is closed, so these are shown for reference only. Run again during market hours "
+               "(9:30am-4pm ET, weekdays) to place orders.")
+
+
+class Plan:
+    """One round of Claude's suggestions. Each trade is checked against the hard limits right before it is
+    placed, taking into account what this round has already placed."""
+    kind = ""
+    label = ""
+    empty_message = "No trades proposed."
+
+    def __init__(self, broker, settings):
+        self.b, self.settings, self.mode = broker, settings, broker.mode
+        self.outlook, self.trades, self.note = "", [], ""
+
+    def headline(self, t, o):
+        return f"{t['side'].upper()} {t['qty']} {t['symbol']}"
+
+    def check(self, t):
+        raise NotImplementedError
+
+    def question(self, t, o):
+        raise NotImplementedError
+
+    def place(self, t, o, i):
+        raise NotImplementedError
+
+
+class LongTermPlan(Plan):
+    kind, label, empty_message = "run", "Long-term", "No trades proposed today."
+
+    def __init__(self, broker, settings, progress=print):
+        super().__init__(broker, settings)
+        self.market_open = bool(broker.clock()["is_open"])
+        progress("Getting prices and your account...")
+        self.snap = snapshot(broker, settings)
+        self.placed_today = sum(1 for o in broker.orders_today() if o.get("client_order_id", "").startswith("amh-"))
+        progress("Asking Claude for a plan (this can take a minute)...")
+        plan = ask_claude(build_prompt(self.snap, settings))
+        journal("plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
+        self.outlook, self.trades = plan["outlook"], plan["trades"]
+        self.note = "" if self.market_open else CLOSED_NOTE
+
+    def check(self, t):
+        ok, why, limit_price = check_trade(t, self.snap, self.settings, self.placed_today, self.market_open)
+        return ok, why, ({"qty": t["qty"], "limit_price": limit_price, "cost": t["qty"] * limit_price} if ok else None)
+
+    def question(self, t, o):
+        return f"Place a limit order at {money(o['limit_price'])} (up to {money(o['cost'])})?"
+
+    def place(self, t, o, i):
+        order = self.b.place_limit_order(t["symbol"], t["side"], t["qty"], o["limit_price"],
+                                         f"amh-{dt.datetime.now():%Y%m%d%H%M%S}-{i}")
+        self.placed_today += 1
+        apply_to_snapshot(self.snap, t, o["limit_price"])
+        add_to_baseline(self.mode, t["symbol"], t["qty"] if t["side"] == "buy" else -t["qty"])
+        return order
+
+
+class DayPlan(Plan):
+    kind, label, empty_message = "day", "Day trade", "No action."
+
+    def __init__(self, broker, settings, state, minutes_left, progress=print):
+        super().__init__(broker, settings)
+        self.state = state
+        progress(f"[{dt.datetime.now(ET):%H:%M} ET] Checking ({minutes_left} min until close)...")
+        self.snap = day_snapshot(broker, settings, state, minutes_left)
+        plan = ask_claude(build_day_prompt(self.snap, settings), DAY_SYSTEM, DAY_SCHEMA, effort="medium")
+        journal("day_plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
+        self.outlook, self.trades = plan["outlook"], plan["trades"]
+
+    def headline(self, t, o):
+        if t["side"] == "buy":
+            extra = f" (stop -{t.get('stop_loss_pct', 0):g}%, target +{t.get('take_profit_pct', 0):g}%)"
+        else:
+            extra = " (close the day position)"
+        return f"{t['side'].upper()} {o['qty'] if o else t['qty']} {t['symbol']}{extra}"
+
+    def check(self, t):
+        return check_day_trade(t, self.snap, self.settings)
+
+    def question(self, t, o):
+        if t["side"] == "buy":
+            return (f"Buy {o['qty']} {t['symbol']} up to {money(o['limit_price'])}, stop {money(o['stop_price'])}, "
+                    f"target {money(o['take_profit'])} (max loss about {money(o['risk'])})?")
+        return f"Sell all {o['qty']} {t['symbol']} day shares (at least {money(o['limit_price'])})?"
+
+    def place(self, t, o, i):
+        b, state, snap = self.b, self.state, self.snap
+        cid = f"amhd-{dt.datetime.now():%Y%m%d%H%M%S}-{i}"
+        if t["side"] == "buy":
+            order = b.place_bracket_buy(t["symbol"], o["qty"], o["limit_price"], o["take_profit"],
+                                        o["stop_price"], cid)
+            legs = order.get("legs") or b.get_order(order["id"]).get("legs") or []
+            state["entries"].append({"symbol": t["symbol"], "qty": o["qty"], "order_id": order["id"],
+                                     "leg_ids": [leg["id"] for leg in legs]})
+            save_day_state(self.mode, state)
+            snap["entries_today"] += 1
+            snap["account"]["cash"] -= o["qty"] * o["limit_price"]
+            snap["all_holdings"][t["symbol"]] = snap["all_holdings"].get(t["symbol"], 0) + o["qty"]
+        else:
+            cancel_and_wait(b, entry_order_ids(state, t["symbol"]))  # free shares held by stop/target
+            order = b.place_limit_order(t["symbol"], "sell", o["qty"], o["limit_price"], cid)
+            snap["day_positions"] = [p for p in snap["day_positions"] if p["symbol"] != t["symbol"]]
+        return order
+
+
+class OptionsPlan(Plan):
+    kind, label, empty_message = "options", "Options", "No options trades proposed today."
+
+    def __init__(self, broker, settings, progress=print):
+        super().__init__(broker, settings)
+        acct = broker.account()
+        level = acct.get("options_trading_level", acct.get("options_approved_level"))
+        if level is not None and int(level) < 2:
+            raise Notice("This account isn't approved to buy calls and puts yet (options level 2). "
+                         "In the Alpaca dashboard, open your account settings and apply for options trading.")
+        self.market_open = bool(broker.clock()["is_open"])
+        progress("Getting stock prices and option quotes...")
+        self.snap = options_snapshot(broker, settings)
+        if not any(self.snap["contracts_you_can_buy"].values()) and not self.snap["options_held"]:
+            raise Notice("No contracts fit your limits right now (price, expiry, bid/ask gap). Nothing to do.")
+        self.buys_today = sum(1 for o in broker.orders_today()
+                              if o.get("client_order_id", "").startswith("amho-") and o.get("side") == "buy")
+        forced = expiring_sells(self.snap, settings)
+        progress("Asking Claude for an options plan (this can take a minute)...")
+        plan = ask_claude(build_options_prompt(self.snap, settings), OPTIONS_SYSTEM, PLAN_SCHEMA)
+        journal("options_plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
+        forced_syms = {t["symbol"] for t in forced}
+        self.outlook = plan["outlook"]
+        self.trades = forced + [t for t in plan["trades"] if not (t["side"] == "sell" and t["symbol"] in forced_syms)]
+        self.note = "" if self.market_open else CLOSED_NOTE
+
+    def headline(self, t, o):
+        return f"{'BUY' if t['side'] == 'buy' else 'SELL'} {t['qty']} x {describe_option(t['symbol'])}"
+
+    def check(self, t):
+        return check_option_trade(t, self.snap, self.settings, self.buys_today, self.market_open)
+
+    def question(self, t, o):
+        if t["side"] == "buy":
+            return f"Pay up to {money(o['limit_price'])} per share = {money(o['cost'])} in total (the most you can lose)?"
+        return f"Sell for at least {money(o['limit_price'])} per share ({money(o['limit_price'] * 100 * o['qty'])} total)?"
+
+    def place(self, t, o, i):
+        order = self.b.place_option_order(t["symbol"], t["side"], o["qty"], o["limit_price"],
+                                          f"amho-{dt.datetime.now():%Y%m%d%H%M%S}-{i}")
+        if t["side"] == "buy":
+            self.buys_today += 1
+            self.snap["options_paid_total"] += o["cost"]
+            self.snap["account"]["options_buying_power"] -= o["cost"]
+        else:
+            held = next(h for h in self.snap["options_held"] if h["contract"] == t["symbol"])
+            held["qty"] -= o["qty"]
+        return order
+
+
+def place_trade(plan, t, o, i):
+    """Place one checked trade and record it. Returns the broker's order; raises RuntimeError on failure."""
+    try:
+        order = plan.place(t, o, i)
+    except RuntimeError as e:
+        journal("order_failed", mode=plan.mode, trade=t, error=str(e))
+        raise
+    journal("ordered", mode=plan.mode, trade=t, limit_price=o.get("limit_price"), order=o, order_id=order.get("id"))
+    return order
+
+
+def day_tick(b, settings, state, progress=print):
+    """One step of day trading. Returns (plan or None, seconds until the next step, finished for today)."""
+    d = settings["day"]
+    clock = b.clock()
+    left = minutes_until_close(clock)
+    if not clock["is_open"] or left <= d["flatten_min_before_close"]:
+        progress(f"[{dt.datetime.now(ET):%H:%M} ET] Closing all day positions before the bell...")
+        flatten(b, state, progress)
+        return None, 0, True
+    plan = DayPlan(b, settings, state, left, progress)
+    wait = max(min(d["check_every_min"], left - d["flatten_min_before_close"]), 0.5) * 60
+    return plan, wait, False
+
+
+# ---------- terminal commands ----------
+
 def approve(settings, question):
     if can_auto_approve(settings):
         print(f"   {question} Auto-approved (paper).")
@@ -1035,10 +1265,38 @@ def approve(settings, question):
     return input(f"   {question} [y/N] ").strip().lower() in ("y", "yes")
 
 
-def minutes_until_close(clock):
-    now = dt.datetime.fromisoformat(clock["timestamp"].replace("Z", "+00:00"))
-    close = dt.datetime.fromisoformat(clock["next_close"].replace("Z", "+00:00"))
-    return int((close - now).total_seconds() // 60)
+def run_plan_cli(plan):
+    print(f"\nClaude's view: {plan.outlook}\n")
+    if not plan.trades:
+        print(plan.empty_message + "\n")
+        return
+    if plan.note:
+        print(plan.note + "\n")
+    for i, t in enumerate(plan.trades, 1):
+        ok, why, o = plan.check(t)
+        print(f"{i}. {plan.headline(t, o)}")
+        print(f"   Why:  {t['reason']}")
+        print(f"   Risk: {t['risk']}")
+        if not ok:
+            print(f"   Blocked: {why}.\n")
+            journal("blocked", mode=plan.mode, trade=t, reason=why)
+            continue
+        if not approve(plan.settings, plan.question(t, o)):
+            print("   Skipped.\n")
+            journal("skipped", mode=plan.mode, trade=t)
+            continue
+        try:
+            order = place_trade(plan, t, o, i)
+        except RuntimeError as e:
+            print(f"   Order failed: {e}\n")
+            continue
+        print(f"   Order sent ({order.get('status', 'submitted')}).\n")
+
+
+def cli_broker():
+    settings = load_settings()
+    confirm_mode(settings)
+    return Broker(settings["mode"]), settings
 
 
 def status():
@@ -1064,112 +1322,22 @@ def status():
 
 
 def run():
-    settings = load_settings()
-    confirm_mode(settings)
-    b = Broker(settings["mode"])
-    market_open = bool(b.clock()["is_open"])
-    print("Getting prices and your account...")
-    snap = snapshot(b, settings)
-    placed_today = sum(1 for o in b.orders_today() if o.get("client_order_id", "").startswith("amh-"))
-    print("Asking Claude for a plan (this can take a minute)...\n")
-    plan = ask_claude(build_prompt(snap, settings))
-    journal("plan", mode=b.mode, outlook=plan["outlook"], trades=plan["trades"])
+    b, settings = cli_broker()
+    run_plan_cli(LongTermPlan(b, settings))
 
-    print(f"Claude's view: {plan['outlook']}\n")
-    if not plan["trades"]:
-        print("No trades proposed today.")
+
+def options_cmd():
+    b, settings = cli_broker()
+    try:
+        plan = OptionsPlan(b, settings)
+    except Notice as e:
+        print(e)
         return
-    if not market_open:
-        print("The market is closed, so these are shown for reference only. Run again during market hours "
-              "(9:30am-4pm ET, weekdays) to place orders.\n")
-
-    for i, t in enumerate(plan["trades"], 1):
-        print(f"{i}. {t['side'].upper()} {t['qty']} {t['symbol']}")
-        print(f"   Why:  {t['reason']}")
-        print(f"   Risk: {t['risk']}")
-        ok, why, limit_price = check_trade(t, snap, settings, placed_today, market_open)
-        if not ok:
-            print(f"   Blocked: {why}.\n")
-            journal("blocked", mode=b.mode, trade=t, reason=why)
-            continue
-        est = t["qty"] * limit_price
-        if not approve(settings, f"Place a limit order at {money(limit_price)} (up to {money(est)})?"):
-            print("   Skipped.\n")
-            journal("skipped", mode=b.mode, trade=t)
-            continue
-        try:
-            order = b.place_limit_order(t["symbol"], t["side"], t["qty"], limit_price,
-                                        f"amh-{dt.datetime.now():%Y%m%d%H%M%S}-{i}")
-        except RuntimeError as e:
-            print(f"   Order failed: {e}\n")
-            journal("order_failed", mode=b.mode, trade=t, error=str(e))
-            continue
-        placed_today += 1
-        apply_to_snapshot(snap, t, limit_price)
-        add_to_baseline(b.mode, t["symbol"], t["qty"] if t["side"] == "buy" else -t["qty"])
-        print(f"   Order sent ({order.get('status', 'submitted')}).\n")
-        journal("ordered", mode=b.mode, trade=t, limit_price=limit_price, order_id=order.get("id"))
-
-
-def day_check(b, settings, state, minutes_left):
-    print(f"[{dt.datetime.now(ET):%H:%M} ET] Checking ({minutes_left} min until close)...")
-    snap = day_snapshot(b, settings, state, minutes_left)
-    plan = ask_claude(build_day_prompt(snap, settings), DAY_SYSTEM, DAY_SCHEMA, effort="medium")
-    journal("day_plan", mode=b.mode, outlook=plan["outlook"], trades=plan["trades"])
-    print(f"Claude's view: {plan['outlook']}")
-    if not plan["trades"]:
-        print("No action.\n")
-        return
-    for i, t in enumerate(plan["trades"], 1):
-        ok, why, o = check_day_trade(t, snap, settings)
-        if t["side"] == "buy":
-            extra = f" (stop -{t.get('stop_loss_pct', 0):g}%, target +{t.get('take_profit_pct', 0):g}%)"
-        else:
-            extra = " (close the day position)"
-        print(f"{i}. {t['side'].upper()} {o['qty'] if o else t['qty']} {t['symbol']}{extra}")
-        print(f"   Why:  {t['reason']}")
-        print(f"   Risk: {t['risk']}")
-        if not ok:
-            print(f"   Blocked: {why}.")
-            journal("blocked", mode=b.mode, trade=t, reason=why)
-            continue
-        if t["side"] == "buy":
-            q = (f"Buy {o['qty']} {t['symbol']} up to {money(o['limit_price'])}, stop {money(o['stop_price'])}, "
-                 f"target {money(o['take_profit'])} (max loss about {money(o['risk'])})?")
-        else:
-            q = f"Sell all {o['qty']} {t['symbol']} day shares (at least {money(o['limit_price'])})?"
-        if not approve(settings, q):
-            print("   Skipped.")
-            journal("skipped", mode=b.mode, trade=t)
-            continue
-        cid = f"amhd-{dt.datetime.now():%Y%m%d%H%M%S}-{i}"
-        try:
-            if t["side"] == "buy":
-                order = b.place_bracket_buy(t["symbol"], o["qty"], o["limit_price"], o["take_profit"],
-                                            o["stop_price"], cid)
-                legs = order.get("legs") or b.get_order(order["id"]).get("legs") or []
-                state["entries"].append({"symbol": t["symbol"], "qty": o["qty"], "order_id": order["id"],
-                                         "leg_ids": [leg["id"] for leg in legs]})
-                save_day_state(b.mode, state)
-                snap["entries_today"] += 1
-                snap["account"]["cash"] -= o["qty"] * o["limit_price"]
-                snap["all_holdings"][t["symbol"]] = snap["all_holdings"].get(t["symbol"], 0) + o["qty"]
-            else:
-                cancel_and_wait(b, entry_order_ids(state, t["symbol"]))  # free shares held by stop/target
-                order = b.place_limit_order(t["symbol"], "sell", o["qty"], o["limit_price"], cid)
-        except RuntimeError as e:
-            print(f"   Order failed: {e}")
-            journal("order_failed", mode=b.mode, trade=t, error=str(e))
-            continue
-        print(f"   Order sent ({order.get('status', 'submitted')}).")
-        journal("ordered", mode=b.mode, trade=t, order=o, order_id=order.get("id"))
-    print()
+    run_plan_cli(plan)
 
 
 def day(once=False):
-    settings = load_settings()
-    confirm_mode(settings)
-    b = Broker(settings["mode"])
+    b, settings = cli_broker()
     d = settings["day"]
     if not b.clock()["is_open"]:
         print("The market is closed. Day trading runs 9:30am-4pm ET on weekdays.")
@@ -1182,21 +1350,19 @@ def day(once=False):
         print("Stay at this window: every trade waits for your y/n.\n")
     try:
         while True:
-            clock = b.clock()
-            left = minutes_until_close(clock)
-            if not clock["is_open"] or left <= d["flatten_min_before_close"]:
-                print(f"[{dt.datetime.now(ET):%H:%M} ET] Closing all day positions before the bell...")
-                flatten(b, state)
-                print("Done for today.")
-                return
             try:
-                day_check(b, settings, state, left)
+                plan, wait, done = day_tick(b, settings, state)
             except RuntimeError as e:  # one bad check shouldn't end the session
                 print(f"Check skipped: {e}\n")
                 journal("day_error", mode=b.mode, error=str(e))
+                plan, wait, done = None, d["check_every_min"] * 60, False
+            if done:
+                print("Done for today.")
+                return
+            if plan:
+                run_plan_cli(plan)
             if once:
                 return
-            wait = max(min(d["check_every_min"], left - d["flatten_min_before_close"]), 0.5) * 60
             print(f"Next check in {wait / 60:.0f} min. Press Ctrl+C to stop.\n")
             time.sleep(wait)
     except KeyboardInterrupt:
@@ -1205,79 +1371,8 @@ def day(once=False):
               "to resume (it closes them before the bell).")
 
 
-def options_cmd():
-    settings = load_settings()
-    confirm_mode(settings)
-    b = Broker(settings["mode"])
-    acct = b.account()
-    level = acct.get("options_trading_level", acct.get("options_approved_level"))
-    if level is not None and int(level) < 2:
-        print("This account isn't approved to buy calls and puts yet (options level 2).\n"
-              "In the Alpaca dashboard, open your account settings and apply for options trading.")
-        return
-    market_open = bool(b.clock()["is_open"])
-    print("Getting stock prices and option quotes...")
-    snap = options_snapshot(b, settings)
-    if not any(snap["contracts_you_can_buy"].values()) and not snap["options_held"]:
-        print("No contracts fit your limits right now (price, expiry, bid/ask gap). Nothing to do.")
-        return
-    buys_today = sum(1 for o in b.orders_today()
-                     if o.get("client_order_id", "").startswith("amho-") and o.get("side") == "buy")
-    forced = expiring_sells(snap, settings)
-    print("Asking Claude for an options plan (this can take a minute)...\n")
-    plan = ask_claude(build_options_prompt(snap, settings), OPTIONS_SYSTEM, PLAN_SCHEMA)
-    journal("options_plan", mode=b.mode, outlook=plan["outlook"], trades=plan["trades"])
-    print(f"Claude's view: {plan['outlook']}\n")
-    forced_syms = {t["symbol"] for t in forced}
-    trades = forced + [t for t in plan["trades"] if not (t["side"] == "sell" and t["symbol"] in forced_syms)]
-    if not trades:
-        print("No options trades proposed today.")
-        return
-    if not market_open:
-        print("The market is closed, so these are shown for reference only. Run again during market hours "
-              "(9:30am-4pm ET, weekdays) to place orders.\n")
-
-    for i, t in enumerate(trades, 1):
-        verb = "BUY" if t["side"] == "buy" else "SELL"
-        print(f"{i}. {verb} {t['qty']} x {describe_option(t['symbol'])}")
-        print(f"   Why:  {t['reason']}")
-        print(f"   Risk: {t['risk']}")
-        ok, why, o = check_option_trade(t, snap, settings, buys_today, market_open)
-        if not ok:
-            print(f"   Blocked: {why}.\n")
-            journal("blocked", mode=b.mode, trade=t, reason=why)
-            continue
-        if t["side"] == "buy":
-            q = (f"Pay up to {money(o['limit_price'])} per share = {money(o['cost'])} in total "
-                 f"(the most you can lose)?")
-        else:
-            q = f"Sell for at least {money(o['limit_price'])} per share ({money(o['limit_price'] * 100 * o['qty'])} total)?"
-        if not approve(settings, q):
-            print("   Skipped.\n")
-            journal("skipped", mode=b.mode, trade=t)
-            continue
-        try:
-            order = b.place_option_order(t["symbol"], t["side"], o["qty"], o["limit_price"],
-                                         f"amho-{dt.datetime.now():%Y%m%d%H%M%S}-{i}")
-        except RuntimeError as e:
-            print(f"   Order failed: {e}\n")
-            journal("order_failed", mode=b.mode, trade=t, error=str(e))
-            continue
-        if t["side"] == "buy":
-            buys_today += 1
-            snap["options_paid_total"] += o["cost"]
-            snap["account"]["options_buying_power"] -= o["cost"]
-        else:
-            held = next(h for h in snap["options_held"] if h["contract"] == t["symbol"])
-            held["qty"] -= o["qty"]
-        print(f"   Order sent ({order.get('status', 'submitted')}).\n")
-        journal("ordered", mode=b.mode, trade=t, limit_price=o["limit_price"], order_id=order.get("id"))
-
-
 def flatten_cmd():
-    settings = load_settings()
-    confirm_mode(settings)
-    b = Broker(settings["mode"])
+    b, _ = cli_broker()
     if not day_state_file(b.mode).exists():
         print("No day trading today, so there's nothing to close.")
         return
@@ -1285,12 +1380,15 @@ def flatten_cmd():
     flatten(b, load_day_state(b))
 
 
-def history():
+def history_lines():
     if not JOURNAL_FILE.exists():
-        print("Nothing yet. Run `python trader.py run` or `python trader.py day`.")
-        return
+        return []
+    lines = []
     for line in JOURNAL_FILE.read_text().splitlines():
-        e = json.loads(line)
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
         when = e["time"][:16].replace("T", " ")
         tag = "LIVE " if e.get("mode") == "live" else ""
         t = e.get("trade") or {}
@@ -1298,26 +1396,45 @@ def history():
         ev = e["event"]
         if ev in ("plan", "day_plan", "options_plan"):
             kind = {"plan": "plan", "day_plan": "day check", "options_plan": "options plan"}[ev]
-            print(f"{when}  {tag}{kind}: {len(e['trades'])} trade(s). {e['outlook']}")
+            lines.append(f"{when}  {tag}{kind}: {len(e['trades'])} trade(s). {e['outlook']}")
         elif ev == "ordered":
             price = e.get("limit_price") or (e.get("order") or {}).get("limit_price")
-            print(f"{when}    {tag}ORDERED {label}" + (f" @ {money(price)}" if price else ""))
+            lines.append(f"{when}    {tag}ORDERED {label}" + (f" @ {money(price)}" if price else ""))
         elif ev == "blocked":
-            print(f"{when}    {tag}blocked {label}: {e['reason']}")
+            lines.append(f"{when}    {tag}blocked {label}: {e['reason']}")
         elif ev == "flatten":
             sold = ", ".join(f"{q} {s}" for s, q in e["sold"].items()) or "nothing to sell"
-            print(f"{when}  {tag}end of day: {sold}")
+            lines.append(f"{when}  {tag}end of day: {sold}")
         else:
-            print(f"{when}    {tag}{ev} {label} {e.get('error', '')}".rstrip())
+            lines.append(f"{when}    {tag}{ev} {label} {e.get('error', '')}".rstrip())
+    return lines
+
+
+def history():
+    lines = history_lines()
+    if not lines:
+        print("Nothing yet. Run `python trader.py run` or `python trader.py day`.")
+    for line in lines:
+        print(line)
 
 
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "help"
+
+    def app():
+        import desktop
+        desktop.serve(open_win="--no-open" not in args)
+
+    def install_app():
+        import desktop
+        desktop.install_app()
+
     actions = {
         "setup": lambda: setup(args[1] if len(args) > 1 else "paper"),
         "status": status, "run": run, "history": history, "flatten": flatten_cmd, "options": options_cmd,
         "day": lambda: day(once=len(args) > 1 and args[1] == "once"),
+        "app": app, "install-app": install_app,
     }
     if cmd not in actions:
         print(__doc__)

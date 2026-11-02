@@ -33,6 +33,30 @@ Paper accounts can trade calls and puts straight away.
 4. Generate **Live** API keys (they start with `AK`) and run `python trader.py setup live`.
 5. Trading stays on paper until you change `"mode"` to `"live"` (see below).
 
+## Desktop app (no Terminal needed)
+Trader HQ has a dashboard that runs the bot in its own window:
+
+- Account value, today's change, cash and options at a glance, with an account-value chart (1W / 1M / 3M / 1Y)
+- Buttons to ask Claude for a long-term plan or an options plan, and to start or stop day trading
+- Each suggestion appears as a card with **Why**, **Risk**, and **Approve** / **Skip** buttons
+- Tabs for positions, open orders (with Cancel), activity and history
+- **Settings** for every limit and strategy, plus your Alpaca keys and an optional Anthropic API key
+
+**Set it up once** (in Terminal, inside the Trader HQ folder):
+```bash
+source .venv/bin/activate
+python trader.py install-app
+```
+This puts a **Trader HQ** icon on your Desktop. From then on, just double-click it. It opens in its own window (an app-style Chrome window if you have Google Chrome, otherwise Safari).
+
+**Good to know:**
+- The bot keeps running in the background while the dashboard is open. Closing the window doesn't stop it; press **Quit** in the dashboard to stop it.
+- Suggestions expire so you never approve on stale prices: day-trade suggestions after 3 minutes, others after 30 minutes. Every approval is checked against your limits again at the moment you click.
+- In live mode, the app asks you to type LIVE each time it starts. Auto-approve only works on paper.
+- Only your own Mac can reach the dashboard (it listens on 127.0.0.1 only), and other websites can't send it orders.
+- If you move the Trader HQ folder, run `python trader.py install-app` again from its new location.
+- Problems starting? See `~/.amh-trader/app.log`.
+
 ## Commands
 ```bash
 python trader.py status      # account value, cash, positions (stocks and options)
@@ -42,6 +66,8 @@ python trader.py day once    # one day-trading check
 python trader.py options     # calls and puts (see below)
 python trader.py flatten     # sell everything day trading bought today, right now
 python trader.py history     # every plan, approval, skip, block and order
+python trader.py app         # open the dashboard from Terminal
+python trader.py install-app # put the Trader HQ icon on your Desktop
 ```
 Orders can only be placed while the market is open (9:30am–4pm ET, weekdays).
 
@@ -123,7 +149,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py
+python -m unittest test_trader.py test_desktop.py
 ```
 No network or keys needed.
 
