@@ -345,7 +345,7 @@ class App:
                                 "Open trades keep their stop-losses and targets.", "goal")
                 self.bot_status[key] = text
                 return "goal"
-        if not T.in_run_window(sec):
+        if not sec.get("around_the_clock") and not T.in_run_window(sec):
             self.bot_status[key] = (f"Waiting for run hours ({T.fmt_hhmm(sec['run_from_hhmm'])} to "
                                     f"{T.fmt_hhmm(sec['run_to_hhmm'])} ET)")
             return "wait"
@@ -371,7 +371,7 @@ class App:
             while not self.cday_stop.is_set() and not self.stopping.is_set():
                 s = self.settings()
                 sec = s["crypto_day"]
-                if F.minutes_to(sec["close_all_hhmm"]) <= 30:
+                if not sec.get("around_the_clock") and F.minutes_to(sec["close_all_hhmm"]) <= 30:
                     self.bot_status["crypto_day"] = (f"Done for today: trades close at {T.fmt_hhmm(sec['close_all_hhmm'])} ET. "
                                                      "Resumes after midnight ET.")
                     self.cday_next = None
@@ -557,11 +557,15 @@ class App:
                 pl = self.bot_pl(key)
             except RuntimeError:
                 pl = {"realized": 0, "unrealized": 0, "total": 0}
-            out[key] = {**pl, "status": self.bot_status.get(key, ""), "in_hours": T.in_run_window(sec),
+            out[key] = {**pl, "status": self.bot_status.get(key, ""), "in_hours": sec.get("around_the_clock") or T.in_run_window(sec),
                         "target_pct": sec.get("daily_profit_target_pct", 0), "limit_pct": sec.get("daily_loss_limit_pct", 0),
                         "portfolio": value,
                         "run_from": sec.get("run_from_hhmm", 0), "run_to": sec.get("run_to_hhmm", 0),
                         "every": sec.get("check_every_min")}
+        cd = s["crypto_day"]
+        out["crypto_day"].update({"around_the_clock": bool(cd.get("around_the_clock")), "max_hold_hours": cd.get("max_hold_hours", 0),
+                                  "close_all": cd.get("close_all_hhmm"), "watchlist": cd["watchlist"],
+                                  "coin_lists": {"blue": T.BLUE_CHIP_COINS, "meme": T.MEME_COINS}})
         return out
 
     def data_broker(self):

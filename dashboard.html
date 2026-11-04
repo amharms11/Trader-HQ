@@ -229,6 +229,8 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .bot-cfg details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
 .bot-cfg-form { display: grid; gap: 8px; margin-top: 8px; }
 .bot-cfg-form .form-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.crypto-extras { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.crypto-extras label > input[type=text] { width: 100%; }
 .phone-steps { display: grid; gap: 14px; }
 .phone-step { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); }
 .phone-step h3 { margin: 0; font-size: 14px; display: flex; gap: 8px; align-items: center; }
@@ -760,6 +762,12 @@ const LABELS = {
   "crypto_day.max_risk_per_trade_usd": ["Max loss per crypto day trade ($)", "If its stop-loss is hit."],
   "crypto_day.max_stop_loss_pct": ["Widest stop-loss (%)", ""],
   "crypto_day.max_take_profit_pct": ["Furthest target (%)", ""],
+  around_the_clock: ["Crypto day trading 24/7", "Trade day and night, weekends too. Ignores run hours and the close-all time; trades are sold at their target, stop-loss, or after the hours limit."],
+  max_hold_hours: ["Sell a crypto day trade after (hours)", "0 = no limit. Keeps trades from sitting open, especially in 24/7 mode."],
+  meme_max_order_usd: ["Largest meme coin trade ($)", "DOGE, SHIB, PEPE, BONK, WIF, TRUMP: they swing 10–20% a day, so keep these small."],
+  meme_max_stop_loss_pct: ["Widest meme coin stop-loss (%)", ""],
+  meme_max_take_profit_pct: ["Furthest meme coin target (%)", ""],
+  max_meme_trades_open: ["Meme coin trades open at once", ""],
   close_all_hhmm: ["Close all crypto day trades at (HHMM, New York)", "Crypto never closes, so this is the daily cut-off. E.g. 2330 = 11:30 PM."],
   data_feed: ["Price data feed", "IEX is free and real-time for one exchange. SIP covers all exchanges and needs a paid Alpaca data plan."],
   max_manual_order_usd: ["Largest buy you place yourself ($)", "For the order ticket on stock and crypto pages."],

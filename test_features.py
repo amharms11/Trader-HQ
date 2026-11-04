@@ -650,6 +650,38 @@ class CryptoDayTests(Base):
         self.open_trade(day="2026-11-01")  # left open overnight (app was closed): closed at the next check
         self.assertIn("close-all", F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON)[0])
 
+    def test_around_the_clock_and_max_hold(self):
+        self.s["crypto_day"]["around_the_clock"] = True
+        self.s["crypto_day"]["max_hold_hours"] = 8
+        late = self.plan([], now=ET_NOON.replace(hour=23, minute=10))  # no close-all time in 24/7 mode
+        self.assertTrue(late.check(F.parse_crypto_day(self.t()))[0])
+        self.b.get_order = lambda oid: {"status": "new"}
+        start = ET_NOON.replace(hour=22).timestamp()
+        self.open_trade(day="2026-11-01")
+        self.store.x("UPDATE crypto_day_trades SET opened=?", (start,))
+        self.assertEqual(F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON.replace(hour=23, minute=30)), [])
+        ev = F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=dt.datetime.fromtimestamp(start + 8 * 3600, T.ET))
+        self.assertIn("held 8 hours", ev[0])
+        self.s["crypto_day"]["around_the_clock"] = False  # normal mode: trades still close at the close-all time
+        self.open_trade()
+        self.store.x("UPDATE crypto_day_trades SET opened=? WHERE status='open'", (ET_NOON.timestamp(),))
+        self.assertIn("close-all", F.manage_crypto_day(self.b, self.store, self.mk, self.s, now=ET_NOON.replace(hour=23, minute=30))[0])
+
+    def test_meme_coin_limits_and_min_target(self):
+        self.assertTrue(T.is_meme("DOGE/USD") and T.is_meme("pepe/usd") and not T.is_meme("BTC/USD"))
+        self.s["crypto_day"]["watchlist"] = ["BTC/USD", "DOGE/USD", "PEPE/USD"]
+        self.mk.quotes = lambda syms: {x: {"price": 60000 if x == "BTC/USD" else 0.2} for x in syms}
+        p = self.plan([])
+        meme = lambda **kw: F.parse_crypto_day(self.t(symbol="DOGE/USD", amount_usd=60, stop_loss_pct=6, take_profit_pct=12, **kw))
+        self.assertTrue(p.check(meme())[0], p.check(meme())[1])
+        self.assertIn("meme coin amount", p.check(F.parse_crypto_day(
+            self.t(symbol="DOGE/USD", amount_usd=150, stop_loss_pct=6, take_profit_pct=12)))[1])  # over the $75 meme limit
+        self.assertIn("fees", p.check(F.parse_crypto_day(self.t(take_profit_pct=0.6)))[1])
+        self.assertIn("Alpaca's minimum", p.check(F.parse_crypto_day(self.t(amount_usd=5)))[1])
+        p.open = [{"symbol": "DOGE/USD", "status": "open"}]
+        self.assertIn("meme coin trade(s) open", p.check(F.parse_crypto_day(
+            self.t(symbol="PEPE/USD", amount_usd=60, stop_loss_pct=6, take_profit_pct=12)))[1])
+
     def test_auto_approve_uses_crypto_switch(self):
         s = settings_with(auto_approve=True)
         self.assertTrue(T.can_auto_approve(s, "crypto_day", 100))

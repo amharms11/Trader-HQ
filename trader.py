@@ -150,6 +150,12 @@ DEFAULT_SETTINGS = {
         "max_stop_loss_pct": 3,
         "max_take_profit_pct": 6,
         "close_all_hhmm": 2330,             # sell all crypto day trades at this New York time every day
+        "around_the_clock": False,          # True: trade 24/7 with no daily close-all and no run hours
+        "max_hold_hours": 8,                # sell any crypto day trade still open after this many hours (0 = no limit)
+        "meme_max_order_usd": 75,           # meme coins (DOGE, SHIB, PEPE, BONK, WIF, TRUMP) get smaller trades...
+        "meme_max_stop_loss_pct": 8,        # ...wider stops, because they swing 10-20% in a day...
+        "meme_max_take_profit_pct": 20,
+        "max_meme_trades_open": 1,          # ...and only this many open at once
         "daily_profit_target_pct": 0,
         "daily_loss_limit_pct": 0,
         "run_from_hhmm": 800,
@@ -273,6 +279,15 @@ def confirm_mode(settings):
     if input("Type LIVE to continue: ").strip() != "LIVE":
         sys.exit("Not confirmed. Nothing was done.")
     print()
+
+
+# Coin lists for one-click setup. Meme coins get their own, stricter limits in crypto day trading.
+BLUE_CHIP_COINS = ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "LINK/USD", "AVAX/USD", "LTC/USD", "BCH/USD", "AAVE/USD"]
+MEME_COINS = ["DOGE/USD", "SHIB/USD", "PEPE/USD", "BONK/USD", "WIF/USD", "TRUMP/USD"]
+
+
+def is_meme(symbol):
+    return str(symbol).upper().split("/")[0] in {m.split("/")[0] for m in MEME_COINS}
 
 
 AUTO_KINDS = {"run": "long_term", "day": "day", "options": "options", "crypto": "crypto", "crypto_day": "crypto"}

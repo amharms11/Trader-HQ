@@ -131,7 +131,12 @@ Short crypto trades, like stock day trading but adjusted for crypto's 24/7 marke
 **Every 10 seconds** the app watches open trades, without using Claude:
 - once a buy fills, it places the stop-loss with Alpaca
 - it sells when the target is reached
-- it sells everything at the daily **close-all time** (default 11:30 PM ET), since crypto never closes
+- it sells any trade still open after **8 hours** (change this under Goals & hours; 0 = no limit)
+- it sells everything at the daily **close-all time** (default 11:30 PM ET), unless 24/7 is on
+
+**24/7:** on the Live tab, open **Goals & hours** under Crypto day trading and tick **Trade around the clock (24/7)**. The bot then searches day and night, weekends included, with no close-all time. Each trade ends at its target, its stop-loss, or the hours limit. Daily goals and the trades-per-day limit still reset at midnight New York time. Late nights and weekends are thinner, with wider spreads and sudden spikes, so Claude is told to be pickier then.
+
+**Coins:** the same box has one-click lists. **Blue chips** are BTC, ETH, SOL, XRP, LINK, AVAX, LTC, BCH and AAVE. **Meme coins** are DOGE, SHIB, PEPE, BONK, WIF and TRUMP. **Mix** takes the first three of each. You can also type your own list. Meme coins swing 10–20% a day and many are 85–95% below their peak, so they get stricter limits: at most $75 per trade, stops up to 8%, targets up to 20%, and only one meme trade open at a time. All of these can be changed in Settings → Crypto day trading. Targets must be at least 1%, because Alpaca charges about 0.25% each way, so a smaller gain mostly goes to fees.
 
 **Limits:** risk per trade, trades per day, largest trade, widest stop and target, and how much of the account one coin may take. It only trades its own positions, so crypto you hold long-term is untouched. Auto-approve treats it as part of the **Crypto** checkbox.
 

@@ -927,7 +927,16 @@ Propose at most 2 actions, or none. Rules:
   the target at least 1.5x the stop distance.
 - "sell": close a whole open day trade in that coin (only coins in open_day_trades). Set the numbers to 0.
 - Only enter on a clear setup visible in the data; most checks should end with no trade. Never chase a move.
-- Don't open new trades shortly before the daily close-all time. Don't invent news or facts not in the data.
+- If there is a daily close-all time, don't open new trades shortly before it. If the bot trades around the clock,
+  every trade is sold after max_hold_hours anyway, so only take setups that should play out within that time.
+- Costs: Alpaca charges about 0.25% each way on market orders (about 0.5% round trip) plus the bid/ask spread.
+  A target under about 1% rarely pays after costs.
+- Time of day matters (see clock): the US stock-market hours (about 13:30-21:00 UTC) have the most movement; late US
+  evening into the Asian morning (about 21:00-07:00 UTC) and weekends are thinner, with wider spreads and sudden
+  wicks. Be more selective then.
+- Meme coins (meme_coins in the snapshot) often swing 10-20% in a day and crash together. They have their own
+  smaller size and wider stop limits. Only trade them on a clear setup with strong volume, never because they are
+  already up a lot today. Don't invent news or facts not in the data.
 - reason: 1-2 plain sentences a beginner can follow. risk: the main way this trade could lose money.
 - outlook: 1-2 sentences on the crypto session so far, honest about uncertainty."""
 
@@ -980,16 +989,24 @@ class CryptoDayPlan(T.Plan):
                           "daily_20d": T.summarize_bars(daily) if daily else None}
         self.entries_today = self.store.q("SELECT COUNT(*) FROM crypto_day_trades WHERE mode=? AND day=?",
                                           (self.mode, now.date().isoformat()))[0][0]
-        self.to_close_all = minutes_to(c["close_all_hhmm"], now)
+        self.to_close_all = None if c.get("around_the_clock") else minutes_to(c["close_all_hhmm"], now)
         self.acct = T.account_summary(acct)
         self.held_value = held
-        snap = {"account": self.acct, "minutes_until_daily_close_all": self.to_close_all, "entries_today": self.entries_today,
+        utc = now.astimezone(dt.timezone.utc)
+        snap = {"account": self.acct, "clock": {"new_york": now.strftime("%a %H:%M"), "utc": utc.strftime("%a %H:%M")},
+                "trading_around_the_clock": bool(c.get("around_the_clock")), "max_hold_hours": c.get("max_hold_hours", 0),
+                "meme_coins": [x for x in syms if T.is_meme(x)],
+                "entries_today": self.entries_today,
                 "open_day_trades": [{"symbol": r["symbol"], "entry": r["entry"], "stop": r["stop"], "target": r["target"],
                                      "status": r["status"], "price_now": (self.quotes.get(r["symbol"]) or {}).get("price")}
                                     for r in self.open],
                 "market": stats}
+        if self.to_close_all is not None:
+            snap["minutes_until_daily_close_all"] = self.to_close_all
         limits = {k: c[k] for k in ("max_entries_per_day", "max_order_usd", "max_risk_per_trade_usd", "max_stop_loss_pct",
-                                    "max_take_profit_pct")}
+                                    "max_take_profit_pct", "meme_max_order_usd", "meme_max_stop_loss_pct",
+                                    "meme_max_take_profit_pct", "max_meme_trades_open")}
+        limits["min_take_profit_pct"] = MIN_CRYPTO_DAY_TARGET
         plan = T.ask_claude(f"<strategy>\n{c['strategy']}\n</strategy>\n\n<watchlist>{', '.join(c['watchlist'])}</watchlist>\n\n"
                             f"<limits>\n{json.dumps(limits)}\n</limits>\n\n<snapshot>\n{json.dumps(snap, indent=1, default=str)}\n</snapshot>\n\n"
                             "Propose crypto day-trade actions for right now (or none).", CRYPTO_DAY_SYSTEM, CRYPTO_DAY_SCHEMA, effort="medium")
@@ -1035,6 +1052,16 @@ def parse_crypto_day(t):
         return None
 
 
+MIN_CRYPTO_DAY_TARGET = 1.0  # % — below this, Alpaca's fees and the spread eat the profit
+
+
+def crypto_day_limits(c, sym):
+    """(largest order, widest stop, furthest target) for this coin: meme coins have their own limits."""
+    if T.is_meme(sym):
+        return c["meme_max_order_usd"], c["meme_max_stop_loss_pct"], c["meme_max_take_profit_pct"]
+    return c["max_order_usd"], c["max_stop_loss_pct"], c["max_take_profit_pct"]
+
+
 def check_crypto_day(t, settings, acct, quotes, open_rows, entries_today, to_close_all, held_value):
     c = settings["crypto_day"]
     sym, side = t["symbol"], t["side"]
@@ -1052,17 +1079,25 @@ def check_crypto_day(t, settings, acct, quotes, open_rows, entries_today, to_clo
         return False, f"no current price for {sym}", None
     if entries_today >= c["max_entries_per_day"]:
         return False, f"daily limit of {c['max_entries_per_day']} crypto day trades reached", None
-    if to_close_all <= 30:
+    if to_close_all is not None and to_close_all <= 30:
         return False, f"too close to (or past) today's close-all time of {T.fmt_hhmm(c['close_all_hhmm'])} ET", None
     amount, stop, take = t["amount_usd"], t["stop_loss_pct"], t["take_profit_pct"]
-    if not 1 <= amount <= c["max_order_usd"]:
-        return False, f"the amount must be between $1 and {T.money(c['max_order_usd'])}", None
+    max_amount, max_stop, max_take = crypto_day_limits(c, sym)
+    meme = T.is_meme(sym)
+    kind = "meme coin " if meme else ""
+    if meme:
+        open_memes = {r["symbol"] for r in open_rows if T.is_meme(r["symbol"])}
+        if len(open_memes) >= c["max_meme_trades_open"] and sym not in open_memes:
+            return False, f"already {len(open_memes)} meme coin trade(s) open (limit {c['max_meme_trades_open']:g})", None
+    if not 10 <= amount <= max_amount:
+        return False, f"the {kind}amount must be between $10 (Alpaca's minimum) and {T.money(max_amount)}", None
     if amount > acct["cash"]:
         return False, f"only {T.money(acct['cash'])} cash is available", None
-    if not 0.3 <= stop <= c["max_stop_loss_pct"]:
-        return False, f"stop-loss must be between 0.3% and {c['max_stop_loss_pct']:g}%", None
-    if not 0.3 <= take <= c["max_take_profit_pct"]:
-        return False, f"target must be between 0.3% and {c['max_take_profit_pct']:g}%", None
+    if not 0.3 <= stop <= max_stop:
+        return False, f"{kind}stop-loss must be between 0.3% and {max_stop:g}%", None
+    if not MIN_CRYPTO_DAY_TARGET <= take <= max_take:
+        return False, (f"{kind}target must be between {MIN_CRYPTO_DAY_TARGET:g}% (smaller gains are eaten by fees) "
+                       f"and {max_take:g}%"), None
     risk = amount * stop / 100
     if risk > c["max_risk_per_trade_usd"]:
         return False, f"a stop-out would lose about {T.money(risk)}, over your {T.money(c['max_risk_per_trade_usd'])} limit", None
@@ -1087,8 +1122,8 @@ def close_crypto_day(broker, store, row, reason):
 
 
 def manage_crypto_day(broker, store, market, settings, notify=None, now=None):
-    """Runs every few seconds: place stop-losses once buys fill, sell at targets, and close everything at the
-    daily close-all time. No Claude involved. Returns what happened."""
+    """Runs every few seconds: place stop-losses once buys fill, sell at targets, sell trades held longer than
+    max_hold_hours, and (unless trading around the clock) close everything at the daily close-all time. No Claude involved. Returns what happened."""
     c = settings["crypto_day"]
     now = now or dt.datetime.now(T.ET)
     events = []
@@ -1097,7 +1132,9 @@ def manage_crypto_day(broker, store, market, settings, notify=None, now=None):
         return events
     open_syms = sorted({r["symbol"] for r in rows if r["status"] == "open"})
     quotes = market.quotes(open_syms) if open_syms else {}
-    past_close_all = minutes_to(c["close_all_hhmm"], now) <= 0
+    nonstop = bool(c.get("around_the_clock"))
+    past_close_all = not nonstop and minutes_to(c["close_all_hhmm"], now) <= 0
+    max_hold = M.num(c.get("max_hold_hours"), 0) * 3600
     say = notify or (lambda *a, **k: None)
     for r in rows:
         if r["status"] == "waiting_fill":
@@ -1141,8 +1178,10 @@ def manage_crypto_day(broker, store, market, settings, notify=None, now=None):
         reason = None
         if price and r["target"] and price >= r["target"]:
             reason = "target reached"
-        elif past_close_all or (r["day"] and r["day"] < now.date().isoformat()):
+        elif past_close_all or (not nonstop and r["day"] and r["day"] < now.date().isoformat()):
             reason = "daily close-all time"
+        elif max_hold and r["opened"] and now.timestamp() - r["opened"] >= max_hold:
+            reason = f"held {max_hold / 3600:g} hours"
         if reason:
             try:
                 close_crypto_day(broker, store, r, reason)

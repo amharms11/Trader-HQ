@@ -716,7 +716,8 @@ function botConfig(key, b) {
   const box = document.getElementById("liveCfg-" + key);
   if (!box || !b || box.contains(document.activeElement)) return;
   const open = box.querySelector("details") && box.querySelector("details").open;
-  const window_ = b.run_from === b.run_to ? "any time" : `${toTime(b.run_from)}–${toTime(b.run_to)} ET`;
+  const cday = key === "crypto_day";
+  const window_ = cday && b.around_the_clock ? "24/7" : b.run_from === b.run_to ? "any time" : `${toTime(b.run_from)}–${toTime(b.run_to)} ET`;
   const dollars = (p) => b.portfolio ? ` (${money0(b.portfolio * p / 100)})` : "";
   const goals = [b.target_pct > 0 ? `goal +${b.target_pct}%${dollars(b.target_pct)}` : "", b.limit_pct > 0 ? `limit −${b.limit_pct}%${dollars(b.limit_pct)}` : ""].filter(Boolean).join(", ") || "no daily goal";
   const equiv = (input, out) => { out.textContent = input.value > 0 && b.portfolio ? "≈ " + money(b.portfolio * input.value / 100) + " today" : "off"; };
@@ -724,9 +725,11 @@ function botConfig(key, b) {
   const form = el("form", {class: "bot-cfg-form", onsubmit: async (e) => {
     e.preventDefault(); const f = e.target;
     const from = fromTime(f.from.value), to = fromTime(f.to.value);
+    const patch = {daily_profit_target_pct: f.target.value || 0, daily_loss_limit_pct: f.limit.value || 0,
+      run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value};
+    if (cday) Object.assign(patch, {around_the_clock: f.nonstop.checked, max_hold_hours: f.hold.value || 0, watchlist: f.coins.value});
     try {
-      await api("/api/settings", {settings: {[key]: {daily_profit_target_pct: f.target.value || 0, daily_loss_limit_pct: f.limit.value || 0,
-        run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value}}});
+      await api("/api/settings", {settings: {[key]: patch}});
       toast("Saved. The bot uses these from its next check."); f.closest("details").open = false; liveTick();
     } catch (err) { toast(err.message, 7000); }
   }},
@@ -736,6 +739,7 @@ function botConfig(key, b) {
       el("label", {}, "Run from (New York time)", el("input", {type: "time", name: "from", value: toTime(b.run_from)})),
       el("label", {}, "Run until", el("input", {type: "time", name: "to", value: toTime(b.run_to)})),
       el("label", {}, "Search every (minutes)", el("input", {type: "number", name: "every", min: 5, max: 240, step: 1, value: b.every || 15}))),
+    cday ? cryptoDayExtras(b) : null,
     el("p", {class: "hint", style: "margin:0"}, "Percent of your portfolio's value at the start of the day, counting this bot's trades today. When either is reached the bot shuts itself off for the day: no new trades and no more Claude use, while trades already open still finish at their target or stop-loss, or are sold at the end of the day. Leave empty for no limit, and both times empty to run any time."),
     el("div", {}, el("button", {class: "btn small primary", type: "submit"}, "Save")));
   setTimeout(() => { equiv(form.target, tOut); equiv(form.limit, lOut); }, 0);
@@ -743,6 +747,39 @@ function botConfig(key, b) {
     el("div", {class: "row bot-today"}, el("span", {}, "Today: ", el("b", {class: tone(b.total)}, signed(b.total))),
       el("span", {class: "muted"}, `· ${goals} · ${window_} · every ${b.every || "?"} min`)),
     el("details", {open: open}, el("summary", {}, "Goals & hours"), form));
+}
+
+
+function cryptoDayExtras(b) {
+  const lists = b.coin_lists || {blue: [], meme: []};
+  const memes = new Set(lists.meme);
+  const coins = el("input", {type: "text", name: "coins", value: (b.watchlist || []).join(", "), oninput: () => note()});
+  const noteEl = el("small", {});
+  const note = () => {
+    const n = coins.value.split(",").map((x) => x.trim().toUpperCase()).filter((x) => memes.has(x)).length;
+    noteEl.textContent = n ? `${n} meme coin${n > 1 ? "s" : ""}: smaller trades, wider stops, limited open at once (see Settings > Crypto day trading).` : "";
+  };
+  setTimeout(note, 0);
+  const pick = (list) => () => { coins.value = list.join(", "); note(); };
+  const nonstop = el("input", {type: "checkbox", name: "nonstop", checked: !!b.around_the_clock, onchange: (e) => toggle(e.target.checked)});
+  const hours = el("small", {style: "display:block"});
+  const toggle = (on) => {
+    const f = nonstop.form; if (!f) return;
+    f.from.disabled = f.to.disabled = on;
+    hours.textContent = on ? "Runs day and night, weekends too. Run hours and the daily close-all time are ignored; each trade is sold at its target, its stop-loss, or after the hours below."
+      : `Trades still open are sold at ${toTime(b.close_all) || "the close-all time"} ET each night.`;
+  };
+  setTimeout(() => toggle(!!b.around_the_clock), 0);
+  return el("div", {class: "crypto-extras"},
+    el("label", {class: "check"}, nonstop, el("span", {}, "Trade around the clock (24/7)", hours)),
+    el("div", {class: "form-grid"},
+      el("label", {}, "Sell a trade after (hours)", el("small", {}, "0 = no limit"), el("input", {type: "number", name: "hold", min: 0, max: 168, step: 1, value: b.max_hold_hours ?? 8}))),
+    el("label", {}, "Coins it may day trade", coins, noteEl),
+    el("div", {class: "row"}, el("span", {class: "muted"}, "Quick pick:"),
+      el("button", {class: "btn small", type: "button", onclick: pick(lists.blue)}, "Blue chips"),
+      el("button", {class: "btn small", type: "button", onclick: pick(lists.meme)}, "Meme coins"),
+      el("button", {class: "btn small", type: "button", onclick: pick([...lists.blue.slice(0, 3), ...lists.meme.slice(0, 3)])}, "Mix")),
+    el("p", {class: "hint", style: "margin:0"}, "Blue chips (Bitcoin, Ethereum, Solana...) are steadier and cheaper to trade. Meme coins (Dogecoin, Shiba Inu, Pepe...) can jump or crash 10–20% in a day, many are down 85–95% from their peak, and online hype around them is often paid. Start with blue chips on paper."));
 }
 
 
