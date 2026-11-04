@@ -59,9 +59,10 @@ function route() {
   else if (h === "tools") { view = "tools"; if (window.FX) window.FX.renderTools(); }
   else if (h === "calendar") { view = "calendar"; if (window.FX && window.FX.renderCalendar) window.FX.renderCalendar(); }
   else if (h === "live") { view = "live"; if (window.FX && window.FX.renderLive) window.FX.renderLive(); }
+  else if (h === "learn" || h.startsWith("learn/")) { view = "learn"; if (window.FX && window.FX.renderLearn) window.FX.renderLearn(h.split("/")[1]); }
   MK.view = view;
   if (view !== "symbol") stopLive();
-  for (const v of ["bot", "live", "calendar", "markets", "scanner", "orders", "reports", "tools", "symbol"]) {
+  for (const v of ["bot", "live", "calendar", "markets", "scanner", "orders", "reports", "tools", "learn", "symbol"]) {
     const node = document.getElementById("view-" + v); if (node) node.hidden = v !== view;
   }
   document.querySelectorAll("#nav a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === (view === "symbol" ? "markets" : view) ? "page" : "false"));

@@ -70,6 +70,8 @@ DEFAULT_SETTINGS = {
     "daily_loss_stop_pct": 3,      # no new buys once the account is down this much today
     "limit_slippage_pct": 0.5,     # limit price = last price +/- this %, so a fast move can't fill badly
     "auto_approve": False,         # paper only: place orders that pass every limit without asking
+    "use_playbook": True,          # give Claude the research playbook (knowledge/*.md) for each bot
+    "learn_from_trades": True,     # after trading, Claude reviews each bot's closed trades and keeps short lessons
     "phone": {
         # Phone access over your private Tailscale network, and push notifications through the ntfy app.
         "enabled": False,
@@ -687,17 +689,54 @@ def build_day_prompt(snap, settings):
             "Propose day-trade actions for right now (or none).")
 
 
-def ask_claude(prompt, system=SYSTEM, schema=PLAN_SCHEMA, effort="high"):
+# ---------- what the bots know ----------
+KNOWLEDGE = Path(__file__).resolve().parent / "knowledge"
+PLAYBOOKS = {"long_term": ["general", "long_term"], "day": ["general", "stocks_day"], "options": ["general", "options"],
+             "crypto": ["general", "crypto"], "crypto_day": ["general", "crypto", "crypto_day"]}
+PLAYBOOK_MAX_CHARS = 9000
+knowledge_hook = None  # set by the desktop app: kind -> (extra system text, extra prompt text)
+
+
+def playbook(kind):
+    """The research playbook for one bot: short rules distilled from the research reports in knowledge/."""
+    parts = []
+    for name in PLAYBOOKS.get(kind, []):
+        try:
+            parts.append((KNOWLEDGE / f"playbook-{name}.md").read_text().strip())
+        except OSError:
+            continue
+    text = "\n\n".join(p for p in parts if p)[:PLAYBOOK_MAX_CHARS]
+    if not text:
+        return ""
+    return ("\n\n<playbook>\nResearch-based guidance the owner chose for you, distilled from studies of what has and "
+            "hasn't worked. Follow it when it applies. It never overrides the rules and limits above.\n\n" + text + "\n</playbook>")
+
+
+def with_knowledge(kind, prompt, system):
+    """Add the bot's playbook to the system prompt and its own lessons to the prompt."""
+    if not kind:
+        return prompt, system
+    if knowledge_hook:
+        extra_system, extra_prompt = knowledge_hook(kind)
+    else:
+        extra_system, extra_prompt = (playbook(kind) if load_settings().get("use_playbook", True) else ""), ""
+    return (extra_prompt + prompt if extra_prompt else prompt), system + extra_system
+
+
+def ask_claude(prompt, system=SYSTEM, schema=PLAN_SCHEMA, effort="high", kind=None, raw=False):
+    """Ask Claude for a structured answer. kind = which bot is asking (adds its playbook and lessons).
+    raw = return the JSON as-is instead of checking it's a trade plan."""
+    prompt, system = with_knowledge(kind, prompt, system)
     backend = claude_backend()
     if backend == "api":
-        return _ask_api(prompt, system, schema, effort)
+        return _ask_api(prompt, system, schema, effort, raw)
     if backend == "cli":
-        return _ask_cli(prompt, system, schema)
+        return _ask_cli(prompt, system, schema, raw)
     raise RuntimeError("Claude isn't set up: sign in to Claude Code (`claude`), or add "
                        f"ANTHROPIC_API_KEY=... to {CONFIG_FILE}")
 
 
-def _ask_api(prompt, system, schema, effort):
+def _ask_api(prompt, system, schema, effort, raw=False):
     import anthropic
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -725,10 +764,11 @@ def _ask_api(prompt, system, schema, effort):
         raise RuntimeError("Claude declined to make a plan this time.")
     if resp.stop_reason == "max_tokens":
         raise RuntimeError("Claude's answer was cut off. Try again.")
-    return parse_plan(next(b.text for b in resp.content if getattr(b, "type", "") == "text"))
+    text = next(b.text for b in resp.content if getattr(b, "type", "") == "text")
+    return _raw_json(text) if raw else parse_plan(text)
 
 
-def _ask_cli(prompt, system, schema):
+def _ask_cli(prompt, system, schema, raw=False):
     cmd = [find_claude_cli(), "-p", "--output-format", "json", "--tools", "", "--system-prompt", system,
            "--json-schema", json.dumps(schema), "--no-session-persistence", "--strict-mcp-config"]
     with tempfile.TemporaryDirectory() as empty_dir:  # nothing on disk for it to look at
@@ -744,7 +784,22 @@ def _ask_cli(prompt, system, schema):
     if res.get("is_error"):
         raise RuntimeError(f"Claude Code: {str(res.get('result') or res.get('subtype'))[:300]}")
     plan = res.get("structured_output")
+    if raw:
+        return plan if isinstance(plan, dict) else _raw_json(res.get("result") or "")
     return validate_plan_shape(plan) if isinstance(plan, dict) else parse_plan(res.get("result") or "")
+
+
+def _raw_json(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`").split("\n", 1)[-1]
+    try:
+        out = json.loads(text)
+    except ValueError:
+        raise RuntimeError("Claude's answer wasn't readable. Try again.") from None
+    if not isinstance(out, dict):
+        raise RuntimeError("Claude's answer wasn't in the expected format. Try again.")
+    return out
 
 
 def ask_text(prompt, system, effort="medium"):
@@ -1290,7 +1345,7 @@ class LongTermPlan(Plan):
         self.snap = snapshot(broker, settings)
         self.placed_today = sum(1 for o in broker.orders_today() if o.get("client_order_id", "").startswith("amh-"))
         progress("Asking Claude for a plan (this can take a minute)...")
-        plan = ask_claude(build_prompt(self.snap, settings))
+        plan = ask_claude(build_prompt(self.snap, settings), kind="long_term")
         journal("plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
         self.outlook, self.trades = plan["outlook"], plan["trades"]
         self.note = "" if self.market_open else CLOSED_NOTE
@@ -1321,7 +1376,7 @@ class DayPlan(Plan):
         self.state = state
         progress(f"[{dt.datetime.now(ET):%H:%M} ET] Checking ({minutes_left} min until close)...")
         self.snap = day_snapshot(broker, settings, state, minutes_left)
-        plan = ask_claude(build_day_prompt(self.snap, settings), DAY_SYSTEM, DAY_SCHEMA, effort="medium")
+        plan = ask_claude(build_day_prompt(self.snap, settings), DAY_SYSTEM, DAY_SCHEMA, effort="medium", kind="day")
         journal("day_plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
         self.outlook, self.trades = plan["outlook"], plan["trades"]
 
@@ -1380,7 +1435,7 @@ class OptionsPlan(Plan):
                               if o.get("client_order_id", "").startswith("amho-") and o.get("side") == "buy")
         forced = expiring_sells(self.snap, settings)
         progress("Asking Claude for an options plan (this can take a minute)...")
-        plan = ask_claude(build_options_prompt(self.snap, settings), OPTIONS_SYSTEM, PLAN_SCHEMA)
+        plan = ask_claude(build_options_prompt(self.snap, settings), OPTIONS_SYSTEM, PLAN_SCHEMA, kind="options")
         journal("options_plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
         forced_syms = {t["symbol"] for t in forced}
         self.outlook = plan["outlook"]

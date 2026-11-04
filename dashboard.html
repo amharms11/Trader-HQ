@@ -229,6 +229,15 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .bot-cfg details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
 .bot-cfg-form { display: grid; gap: 8px; margin-top: 8px; }
 .bot-cfg-form .form-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.md h1 { font-size: 22px; margin: 0 0 8px; } .md h2 { font-size: 18px; margin: 22px 0 6px; } .md h3 { font-size: 15px; margin: 16px 0 4px; }
+.md p, .md li { line-height: 1.55; } .md ul, .md ol { padding-left: 22px; }
+.md table { border-collapse: collapse; margin: 8px 0; font-size: 13px; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }
+.md blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--border); color: var(--ink-2); }
+.md code { font-size: 12px; background: var(--grid); padding: 1px 4px; border-radius: 4px; }
+.lesson { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border); }
+.lesson p { margin: 0; } .lesson .grow { flex: 1; }
+.learn-bot { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .crypto-extras { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .crypto-extras label > input[type=text] { width: 100%; }
 .phone-steps { display: grid; gap: 14px; }
@@ -256,7 +265,7 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .compare-row { margin-top: 10px; }
 button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 1460px) { header { gap: 8px; padding-left: 14px; padding-right: 14px; } .search input { width: 160px; } #marketPill .mk-time { display: none; } header h1 { font-size: 16px; margin-right: 2px; } }
-@media (max-width: 1260px) { #modePill { font-size: 11px; } nav#nav a { padding: 6px 6px; font-size: 13px; } .search input { width: 130px; } }
+@media (max-width: 1380px) { #modePill { font-size: 11px; } nav#nav a { padding: 6px 5px; font-size: 13px; } .search input { width: 120px; } }
 @media (max-width: 1100px) { .sym-grid { grid-template-columns: minmax(0, 1fr); } .sym-side { position: static; } .search input { width: 180px; } }
 @media (max-width: 900px) {
   .two-eq { grid-template-columns: minmax(0, 1fr); }
@@ -276,7 +285,7 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
   <span id="modePill" class="pill"><span class="dot"></span><span>…</span></span>
   <span id="marketPill" class="pill"><span class="dot"></span><span>…</span></span>
   <nav id="nav" aria-label="Sections">
-    <a href="#bot" data-view="bot">Bot</a><a href="#live" data-view="live">Live</a><a href="#calendar" data-view="calendar">Calendar</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a><a href="#reports" data-view="reports">Reports</a><a href="#tools" data-view="tools">Tools</a>
+    <a href="#bot" data-view="bot">Bot</a><a href="#live" data-view="live">Live</a><a href="#calendar" data-view="calendar">Calendar</a><a href="#markets" data-view="markets">Markets</a><a href="#scanner" data-view="scanner">Scanner</a><a href="#orders" data-view="orders">Orders</a><a href="#reports" data-view="reports">Reports</a><a href="#tools" data-view="tools">Tools</a><a href="#learn" data-view="learn">Learn</a>
   </nav>
   <div class="search"><input type="search" id="symSearch" placeholder="Search symbol or company" autocomplete="off" aria-label="Search symbol or company"><div id="symResults" class="sr-list" hidden></div></div>
   <div id="busy" class="busy" hidden><div class="spinner" aria-hidden="true"></div><span></span></div>
@@ -400,6 +409,7 @@ button[aria-pressed="true"].btn { border-color: var(--accent); color: var(--acce
   <div id="view-orders" class="view" hidden></div>
   <div id="view-reports" class="view" hidden></div>
   <div id="view-tools" class="view" hidden></div>
+  <div id="view-learn" class="view" hidden></div>
   <div id="view-symbol" class="view" hidden></div>
 </main>
 

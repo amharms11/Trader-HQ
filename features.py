@@ -647,7 +647,8 @@ class CryptoPlan(T.Plan):
         progress("Asking Claude about crypto (this can take a minute)...")
         plan = T.ask_claude(f"<strategy>\n{c['strategy']}\n</strategy>\n\n<watchlist>{', '.join(c['watchlist'])}</watchlist>\n\n"
                             f"<limits>\n{json.dumps(limits)}\n</limits>\n\n<snapshot>\n{json.dumps(self.snap, indent=1)}\n</snapshot>\n\n"
-                            "Propose crypto actions for right now (or none).", CRYPTO_SYSTEM, CRYPTO_SCHEMA, effort="medium")
+                            "Propose crypto actions for right now (or none).", CRYPTO_SYSTEM, CRYPTO_SCHEMA, effort="medium",
+                            kind="crypto")
         self.outlook = plan["outlook"]
         self.trades = [parse_crypto_trade(t) for t in (plan.get("raw_trades") or plan["trades"])]
         self.trades = [t for t in self.trades if t]
@@ -1009,7 +1010,8 @@ class CryptoDayPlan(T.Plan):
         limits["min_take_profit_pct"] = MIN_CRYPTO_DAY_TARGET
         plan = T.ask_claude(f"<strategy>\n{c['strategy']}\n</strategy>\n\n<watchlist>{', '.join(c['watchlist'])}</watchlist>\n\n"
                             f"<limits>\n{json.dumps(limits)}\n</limits>\n\n<snapshot>\n{json.dumps(snap, indent=1, default=str)}\n</snapshot>\n\n"
-                            "Propose crypto day-trade actions for right now (or none).", CRYPTO_DAY_SYSTEM, CRYPTO_DAY_SCHEMA, effort="medium")
+                            "Propose crypto day-trade actions for right now (or none).", CRYPTO_DAY_SYSTEM, CRYPTO_DAY_SCHEMA, effort="medium",
+                            kind="crypto_day")
         self.outlook = plan["outlook"]
         self.trades = [x for x in (parse_crypto_day(t) for t in (plan.get("raw_trades") or plan["trades"])) if x]
         T.journal("crypto_day_plan", mode=self.mode, outlook=self.outlook, trades=self.trades)

@@ -169,6 +169,14 @@ Safety on the phone:
 
 **Notifications (optional):** install the free **ntfy** app on the iPhone. In Settings → Phone access, tap to set up notifications, then subscribe to the topic it shows. You choose which alerts you get: trades waiting for your approval, trades placed or closed, goals and price alerts, the daily summary, and problems. Keep the topic name to yourself. Notifications never include keys.
 
+## Learn: what the bots know and learn
+The **Learn** tab shows what each bot knows and lets you read the research behind it.
+
+- **Research playbook:** each bot gets a short set of rules drawn from the research reports, added to every Claude check. The day-trading bot gets rules about the open, midday and the close. The crypto bots get rules about fees, quiet hours and meme coins. The options bot gets rules about time decay and earnings. The rules live in `knowledge/playbook-*.md` and update with the app.
+- **Lessons from its own trades:** once a day after 4:10 PM ET, each bot with at least 5 new closed trades reviews them. Claude looks only at the numbers (prices, times, profit or loss) and keeps up to 8 short lessons, such as "skip entries in the first 15 minutes: 4 of 5 hit their stop". Those lessons go into that bot's next checks. **Review its trades now** runs a review straight away.
+- **You stay in charge:** remove any lesson that looks wrong and it won't be brought back. Turn playbooks or learning off with the two checkboxes. Paper and live keep separate lessons. Neither playbooks nor lessons can change your limits, because the app still checks every trade.
+- **Research library:** the full reports (stocks, chart reading and timing, crypto day trading) are readable right in the app.
+
 ## Calendar
 The **Calendar** tab shows every day's profit or loss on a monthly calendar:
 - ▲ green days and ▼ red days, with the dollar and % change; the color is deeper for bigger moves
@@ -290,7 +298,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py
+python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py
 ```
 No network or keys needed.
 

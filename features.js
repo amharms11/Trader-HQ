@@ -871,4 +871,120 @@ FX.phoneSettings = async function (refresh) {
     el("div", {class: "phone-steps"}, s1, s2, s3, s4, s5)));
 };
 
-route();
+
+// ---------- Learn: what the bots know, what they've learned, and the research library ----------
+function mdInline(text) {
+  // **bold**, *italic*, `code` and [links](https://...) as safe DOM nodes (never innerHTML).
+  const out = [];
+  const re = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\))/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0];
+    if (t.startsWith("**")) out.push(el("b", {}, t.slice(2, -2)));
+    else if (t.startsWith("`")) out.push(el("code", {}, t.slice(1, -1)));
+    else if (t.startsWith("[")) {
+      const label = t.slice(1, t.indexOf("]")), url = t.slice(t.indexOf("(") + 1, -1);
+      out.push(/^https?:\/\//.test(url) ? el("a", {href: url, target: "_blank", rel: "noopener noreferrer"}, label) : label);
+    } else out.push(el("i", {}, t.slice(1, -1)));
+    last = m.index + t.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function mdRender(text) {
+  const lines = (text || "").replace(/\r/g, "").split("\n"), nodes = [];
+  let i = 0;
+  const isTable = (l) => /^\s*\|.*\|\s*$/.test(l);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { nodes.push(el("h" + Math.min(h[1].length, 3), {}, ...mdInline(h[2]))); i++; continue; }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) { nodes.push(el("hr", {})); i++; continue; }
+    if (isTable(line)) {
+      const rows = [];
+      while (i < lines.length && isTable(lines[i])) { rows.push(lines[i]); i++; }
+      const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const body = rows.filter((r, k) => !(k === 1 && /^[\s|:-]+$/.test(r)));
+      nodes.push(el("table", {}, ...body.map((r, k) => el("tr", {}, ...cells(r).map((c) => el(k === 0 ? "th" : "td", {}, ...mdInline(c)))))));
+      continue;
+    }
+    if (/^\s*([-*]|\d+[.)])\s+/.test(line)) {
+      const ordered = /^\s*\d/.test(line), items = [];
+      while (i < lines.length && /^\s*([-*]|\d+[.)])\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*([-*]|\d+[.)])\s+/, "")); i++; }
+      nodes.push(el(ordered ? "ol" : "ul", {}, ...items.map((t) => el("li", {}, ...mdInline(t)))));
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const q = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { q.push(lines[i].replace(/^>\s?/, "")); i++; }
+      nodes.push(el("blockquote", {}, ...mdInline(q.join(" "))));
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|\s*([-*]|\d+[.)])\s|>)/.test(lines[i]) && !isTable(lines[i])) { para.push(lines[i].trim()); i++; }
+    nodes.push(el("p", {}, ...mdInline(para.join(" "))));
+  }
+  return nodes;
+}
+FX.mdRender = mdRender;
+
+FX.renderLearn = async function (reportId) {
+  const root = document.getElementById("view-learn"); if (!root) return;
+  if (reportId) {
+    root.replaceChildren(el("section", {class: "card"}, loading()));
+    try {
+      const r = await api("/api/learn/report?id=" + enc(reportId));
+      root.replaceChildren(el("section", {class: "card"},
+        el("p", {style: "margin-top:0"}, el("a", {href: "#learn"}, "← Back to Learn")),
+        el("div", {class: "md"}, ...mdRender(r.text))));
+    } catch (e) { root.replaceChildren(el("section", {class: "card"}, el("p", {class: "msg err"}, e.message), el("a", {href: "#learn"}, "← Back"))); }
+    return;
+  }
+  let d;
+  try { d = await api("/api/learn"); } catch (e) { root.replaceChildren(el("section", {class: "card"}, el("div", {class: "empty"}, e.message))); return; }
+  const save = async (patch, msg) => { try { await api("/api/settings", {settings: patch}); toast(msg); } catch (e) { toast(e.message, 7000); } FX.renderLearn(); };
+  const when = (t) => new Date(t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+  const conf = {low: "Low confidence", medium: "Medium confidence", high: "High confidence"};
+  const botCard = (b) => {
+    const review = async (btn) => {
+      btn.disabled = true; btn.textContent = "Reviewing… (up to a minute)";
+      try {
+        const r = await api("/api/learn/review", {kind: b.kind});
+        toast(r.skipped ? r.reason : "Lessons updated.", 6000);
+      } catch (e) { toast(e.message, 7000); }
+      FX.renderLearn();
+    };
+    const lessons = b.lessons.length ? b.lessons.map((x) => el("div", {class: "lesson"},
+      el("div", {class: "grow"}, el("p", {}, x.text), el("small", {class: "muted"}, `${conf[x.confidence] || ""}${x.evidence ? " · " + x.evidence : ""}`)),
+      el("button", {class: "btn small", type: "button", title: "Remove this lesson. It won't be brought back.", onclick: async () => {
+        try { await api("/api/learn/remove", {id: x.id}); toast("Removed. The bot won't use or relearn it."); } catch (e) { toast(e.message, 7000); }
+        FX.renderLearn(); }}, "Remove")))
+      : [el("p", {class: "hint", style: "margin:4px 0"}, `No lessons yet. After ${d.min_trades} closed trades, it reviews them once a day after 4:10 PM ET.`)];
+    const last = b.last_review;
+    return el("div", {class: "learn-bot"},
+      el("div", {class: "row", style: "justify-content:space-between"}, el("h3", {style: "margin:0"}, b.name),
+        el("button", {class: "btn small", type: "button", onclick: (e) => review(e.target)}, "Review its trades now")),
+      last ? el("p", {class: "hint", style: "margin:4px 0"}, `Last review ${when(last.time)} (${last.trades} closed trades). ${last.summary || ""}`) : null,
+      ...lessons,
+      el("details", {}, el("summary", {}, "Its research playbook"),
+        ...b.playbook.map((p) => el("div", {class: "md"}, ...mdRender(p.text)))));
+  };
+  root.replaceChildren(
+    el("section", {class: "card"},
+      el("h2", {}, "What the bots know"),
+      el("p", {class: "hint", style: "margin-top:0"}, "Each bot gets a research playbook (short rules from the reports below) with every check, plus lessons it learns from its own closed trades. Neither can change your limits: the app still checks every trade. Lessons come from small samples, so remove any that look wrong."),
+      el("label", {class: "check"}, el("input", {type: "checkbox", checked: d.use_playbook, onchange: (e) => save({use_playbook: e.target.checked}, e.target.checked ? "Playbooks on." : "Playbooks off.")}),
+        el("span", {}, "Give Claude the research playbook", el("small", {style: "display:block"}, "Adds a little text to each check. With an API key that's a small extra cost per search."))),
+      el("label", {class: "check"}, el("input", {type: "checkbox", checked: d.learn_from_trades, onchange: (e) => save({learn_from_trades: e.target.checked}, e.target.checked ? "Learning on." : "Learning off.")}),
+        el("span", {}, "Learn from its own trades", el("small", {style: "display:block"}, `Once a day after the close, each bot with ${d.min_trades}+ new closed trades reviews them (one Claude call per bot) and updates its lessons. Paper and live keep separate lessons (now: ${d.mode}).`))),
+      ...d.bots.map(botCard)),
+    el("section", {class: "card"},
+      el("h2", {}, "Research library"),
+      el("p", {class: "hint", style: "margin-top:0"}, "The full reports the playbooks come from. Not financial advice."),
+      d.library.length ? el("ul", {}, ...d.library.map((r) => el("li", {}, el("a", {href: "#learn/" + r.id}, r.title), el("small", {class: "muted"}, ` · about ${Math.max(1, Math.round(r.words / 230))} min read`))))
+        : el("div", {class: "empty"}, "No reports yet.")));
+};
+
+route();  // last, so every page's code above is ready

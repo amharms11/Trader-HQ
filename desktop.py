@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import features as F
+import learn as L
 import market as M
 import phone as P
 import trader as T
@@ -165,6 +166,9 @@ class App:
         self._caffeinate = None
         self._goal_note = set()
         self.updated_files = []                  # files changed by the update installed at startup
+        self._lessons = None
+        self.reviewer = L.AutoReviewer()         # each bot reviews its own trades once a day
+        T.knowledge_hook = L.make_hook(self.settings, lambda: self.lessons, lambda: self.settings()["mode"])
 
     # --- helpers ---
     def log(self, text):
@@ -190,6 +194,22 @@ class App:
         if self._store is None:
             self._store = F.Store(self.market.db)
         return self._store
+
+    @property
+    def lessons(self):
+        if self._lessons is None:
+            self._lessons = L.Lessons(self.store)
+        return self._lessons
+
+    def learn_view(self):
+        s, mode = self.settings(), self.settings()["mode"]
+        bots = []
+        for kind, (name, _) in L.BOTS.items():
+            last = self.lessons.last_review(kind, mode)
+            bots.append({"kind": kind, "name": name, "playbook": L.playbook_parts(kind), "lessons": self.lessons.active(kind, mode),
+                         "removed": len(self.lessons.removed(kind, mode)), "last_review": last})
+        return {"use_playbook": s.get("use_playbook", True), "learn_from_trades": s.get("learn_from_trades", True),
+                "mode": mode, "min_trades": L.MIN_NEW_TRADES, "bots": bots, "library": L.library()}
 
     def notify(self, title, body, kind="info"):
         s = self.settings()
@@ -283,6 +303,8 @@ class App:
                                                          F.manage_crypto_day(self.data_broker(), self.store, self.market, s, self.notify)]))
         if self.due("phone", 60):
             jobs.append(("phone access", lambda: (self.phone_sync(), self.keep_awake())))
+        if s.get("learn_from_trades", True) and self.due("learn", 600):
+            jobs.append(("trade review", lambda: self.reviewer.maybe_run(self.lessons, self.data_broker(), s, self.log)))
         if self.due("summary", 300):
             jobs.append(("daily summary", self.maybe_daily_summary))
         for name, job in jobs:
@@ -1091,6 +1113,10 @@ def make_handler(app, shutdown, restart=lambda: None):
                     return self._send(200, mk.most_actives("trades" if params.get("by") == "trades" else "volume"))
                 if path == "/api/live":
                     return self._send(200, app.live_view(params.get("symbol", "")))
+                if path == "/api/learn":
+                    return self._send(200, app.learn_view())
+                if path == "/api/learn/report":
+                    return self._send(200, L.report(params.get("id", "")))
                 if path == "/api/orders/recent":
                     return self._send(200, {"rows": app.recent_orders()})
                 if path == "/api/watchlists":
@@ -1223,6 +1249,15 @@ def make_handler(app, shutdown, restart=lambda: None):
                     app.save_anthropic_key(str(body.get("key", "")))
                 elif path == "/api/watchlists":
                     return self._send(200, app.watchlist_action(body))
+                elif path == "/api/learn/review":
+                    kind = str(body.get("kind", ""))
+                    if kind not in L.BOTS:
+                        raise ValueError("Unknown bot.")
+                    return self._send(200, L.review(app.lessons, app.data_broker(), kind, app.settings(), force=True))
+                elif path == "/api/learn/remove":
+                    app.lessons.remove(int(M.num(body.get("id"), 0)))
+                elif path == "/api/learn/clear":
+                    app.lessons.clear(str(body.get("kind", "")), app.settings()["mode"])
                 elif path == "/api/alerts":
                     if body.get("action") == "delete":
                         app.store.delete_alert(int(M.num(body.get("id"), 0)))
