@@ -460,6 +460,7 @@ FX.renderLive = function () {
         el("div", {class: "live-bots"},
           el("div", {class: "live-bot"}, el("b", {}, "Day trading"), el("span", {id: "liveDayText", class: "hint", style: "margin:0"}),
             el("div", {id: "liveCfg-day", class: "bot-cfg"}),
+            el("div", {id: "liveFast"}),
             el("div", {class: "row"},
               el("button", {class: "btn primary", type: "button", id: "liveDayStart", onclick: () => post("/api/day/start", {}, "Day trading started.").then(liveTick).catch(() => {})}, "Start day trading"),
               el("button", {class: "btn danger", type: "button", id: "liveDayStop", hidden: true, onclick: () => post("/api/day/stop", {}, "Day trading stopped.").then(liveTick).catch(() => {})}, "Stop day trading"),
@@ -544,6 +545,7 @@ async function liveTick(first) {
       el("td", {class: "num"}, p.target ? fmtPrice(p.target) + ` (${pct(p.to_target_pct)})` : "–")))))
     : el("div", {class: "empty"}, "No open positions."));
   for (const key of ["day", "crypto", "crypto_day"]) botConfig(key, d.bots && d.bots[key]);
+  renderFast(d.fast);
   const sc = d.score, stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
   document.getElementById("liveScore").replaceChildren(
     stat("Realized today", signed(sc.realized), tone(sc.realized)), stat("Open profit / loss", signed(sc.unrealized), tone(sc.unrealized)),
@@ -716,7 +718,7 @@ function botConfig(key, b) {
   const box = document.getElementById("liveCfg-" + key);
   if (!box || !b || box.contains(document.activeElement)) return;
   const open = box.querySelector("details") && box.querySelector("details").open;
-  const cday = key === "crypto_day";
+  const cday = key === "crypto_day", dayBot = key === "day";
   const window_ = cday && b.around_the_clock ? "24/7" : b.run_from === b.run_to ? "any time" : `${toTime(b.run_from)}–${toTime(b.run_to)} ET`;
   const dollars = (p) => b.portfolio ? ` (${money0(b.portfolio * p / 100)})` : "";
   const goals = [b.target_pct > 0 ? `goal +${b.target_pct}%${dollars(b.target_pct)}` : "", b.limit_pct > 0 ? `limit −${b.limit_pct}%${dollars(b.limit_pct)}` : ""].filter(Boolean).join(", ") || "no daily goal";
@@ -728,6 +730,8 @@ function botConfig(key, b) {
     const patch = {daily_profit_target_pct: f.target.value || 0, daily_loss_limit_pct: f.limit.value || 0,
       run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value};
     if (cday) Object.assign(patch, {around_the_clock: f.nonstop.checked, max_hold_hours: f.hold.value || 0, watchlist: f.coins.value});
+    if (dayBot) Object.assign(patch, {fast_mode: f.fast.checked, fast_orb: f.orb.checked, fast_vwap_pullback: f.vwap.checked,
+      time_stop_min: f.tstop.value || 0, fast_plan_every_min: f.fplan.value || 5});
     try {
       await api("/api/settings", {settings: {[key]: patch}});
       toast("Saved. The bot uses these from its next check."); f.closest("details").open = false; liveTick();
@@ -740,16 +744,47 @@ function botConfig(key, b) {
       el("label", {}, "Run until", el("input", {type: "time", name: "to", value: toTime(b.run_to)})),
       el("label", {}, "Search every (minutes)", el("input", {type: "number", name: "every", min: 5, max: 240, step: 1, value: b.every || 15}))),
     cday ? cryptoDayExtras(b) : null,
+    dayBot ? fastExtras(b) : null,
     el("p", {class: "hint", style: "margin:0"}, "Percent of your portfolio's value at the start of the day, counting this bot's trades today. When either is reached the bot shuts itself off for the day: no new trades and no more Claude use, while trades already open still finish at their target or stop-loss, or are sold at the end of the day. Leave empty for no limit, and both times empty to run any time."),
     el("div", {}, el("button", {class: "btn small primary", type: "submit"}, "Save")));
   setTimeout(() => { equiv(form.target, tOut); equiv(form.limit, lOut); }, 0);
   box.replaceChildren(
     el("div", {class: "row bot-today"}, el("span", {}, "Today: ", el("b", {class: tone(b.total)}, signed(b.total))),
-      el("span", {class: "muted"}, `· ${goals} · ${window_} · every ${b.every || "?"} min`)),
+      el("span", {class: "muted"}, `· ${goals} · ${window_} · ` + (dayBot && b.fast_mode ? `fast mode, new setups every ${b.fast_plan_every_min || 5} min` : `every ${b.every || "?"} min`))),
     el("details", {open: open}, el("summary", {}, "Goals & hours"), form));
 }
 
 
+function fastExtras(b) {
+  return el("div", {class: "crypto-extras"},
+    el("label", {class: "check"}, el("input", {type: "checkbox", name: "fast", checked: !!b.fast_mode}),
+      el("span", {}, "Fast mode", el("small", {style: "display:block"}, "Claude arms setups every few minutes from 1-minute data. The app watches prices every 2 seconds and buys the moment one triggers, with the stop-loss and target already attached. Approve setups yourself, or let auto-approve arm them on paper."))),
+    el("div", {class: "row"}, el("span", {class: "muted"}, "Setups:"),
+      el("label", {class: "check"}, el("input", {type: "checkbox", name: "orb", checked: b.fast_orb !== false}), el("span", {}, "Opening range breakout")),
+      el("label", {class: "check"}, el("input", {type: "checkbox", name: "vwap", checked: b.fast_vwap_pullback !== false}), el("span", {}, "VWAP pullback"))),
+    el("div", {class: "form-grid"},
+      el("label", {}, "Claude looks for setups every (min)", el("input", {type: "number", name: "fplan", min: 2, max: 60, step: 1, value: b.fast_plan_every_min || 5})),
+      el("label", {}, "Sell a fast trade after (min)", el("small", {}, "0 = hold until target, stop or the close"), el("input", {type: "number", name: "tstop", min: 0, max: 390, step: 1, value: b.time_stop_min ?? 45}))),
+    el("p", {class: "hint", style: "margin:0"}, "Built-in safety: no chasing a price that already ran past the trigger, no wide spreads or stale prices, a 15-minute pause after a loss, and no new fast trades after 3 losses in a day. Change these in Settings > Day trading."));
+}
+function renderFast(f) {
+  const box = document.getElementById("liveFast"); if (!box) return;
+  if (!f) { box.replaceChildren(); return; }
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const SET = {orb: "Opening range breakout", vwap_pullback: "VWAP pullback"};
+  const armed = f.armed.map((a) => el("div", {class: "lesson"},
+    el("div", {class: "grow"}, el("p", {}, el("b", {}, a.symbol), ` ${SET[a.setup] || a.setup}: buy ${a.qty} above ${fmtPrice(a.trigger)}`),
+      el("small", {class: "muted"}, `Stop ${fmtPrice(a.stop)} · target ${fmtPrice(a.target)} · ${mmss(a.seconds_left)} left${a.reason ? " · " + a.reason : ""}`)),
+    el("button", {class: "btn small", type: "button", onclick: () => post("/api/fast/disarm", {id: a.id}, "Setup cancelled.").then(liveTick).catch(() => {})}, "Cancel")));
+  const open = f.trades.filter((t) => t.status === "entering" || t.status === "open");
+  const done = f.trades.filter((t) => t.status === "closed" && t.result !== "not filled").slice(-5).reverse();
+  box.replaceChildren(el("div", {class: "fast-box"},
+    el("b", {}, "Fast mode"), f.status ? el("small", {class: "muted", style: "display:block"}, f.status) : null,
+    armed.length ? el("div", {}, el("small", {class: "muted"}, "Armed setups (waiting for the price):"), ...armed)
+      : el("small", {class: "muted", style: "display:block"}, "No armed setups right now."),
+    ...open.map((t) => el("small", {style: "display:block"}, `${t.status === "entering" ? "Buying" : "In trade"}: ${t.qty} ${t.symbol} at ${fmtPrice(t.entry || t.limit)} · stop ${fmtPrice(t.stop)} · target ${fmtPrice(t.target)}${t.minutes_in != null ? ` · ${t.minutes_in} min` : ""}`)),
+    ...done.map((t) => el("small", {class: "muted", style: "display:block"}, `${t.symbol} ${t.how || t.result}: `, el("span", {class: tone(t.pnl)}, signed(t.pnl || 0))))));
+}
 function cryptoDayExtras(b) {
   const lists = b.coin_lists || {blue: [], meme: []};
   const memes = new Set(lists.meme);

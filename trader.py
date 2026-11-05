@@ -96,6 +96,20 @@ DEFAULT_SETTINGS = {
         "max_take_profit_pct": 6,
         "no_new_entries_min_before_close": 30,
         "flatten_min_before_close": 10,  # sell all day positions this many minutes before the close
+        # Fast mode: Claude arms setups every few minutes; the app watches prices every few seconds and buys
+        # the moment one triggers, with a bracket order (stop-loss and target at Alpaca).
+        "fast_mode": False,
+        "fast_orb": True,                  # opening range breakout setups
+        "fast_vwap_pullback": True,        # VWAP pullback setups
+        "fast_plan_every_min": 5,          # how often Claude looks for new setups in fast mode
+        "fast_watch_sec": 2,               # how often the app checks prices of armed setups
+        "fast_arm_minutes": 20,            # longest a setup stays armed without triggering
+        "max_chase_pct": 0.3,              # don't buy if the price is already this far past the trigger
+        "max_spread_pct": 0.15,            # don't buy if the bid/ask gap is wider than this
+        "time_stop_min": 45,               # sell a fast trade that hasn't hit its target or stop after this (0 = off)
+        "cooldown_after_loss_min": 15,     # no new fast entries for this long after a losing trade
+        "max_losses_per_day": 3,           # stop fast entries for the day after this many losing trades
+        "max_open_fast_trades": 2,
         "daily_profit_target_pct": 0,      # >0: shut this bot off for the day once it's up this % of the portfolio
         "daily_loss_limit_pct": 0,         # >0: shut this bot off for the day once it's down this % of the portfolio
         "run_from_hhmm": 0,                # run hours in New York time, e.g. 945 to 1530; 0 and 0 = any time
@@ -414,11 +428,11 @@ class Broker:
         res = self._req(DATA_URL, "/v2/stocks/trades/latest", {"symbols": ",".join(symbols), "feed": "iex"})
         return {s: float(t["p"]) for s, t in (res.get("trades") or {}).items()}
 
-    def bars(self, symbols, timeframe, start):
+    def bars(self, symbols, timeframe, start, feed="iex"):
         out, token = {}, None
         while True:
             params = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": start,
-                      "feed": "iex", "adjustment": "all", "limit": 10000}
+                      "feed": feed, "adjustment": "all", "limit": 10000}
             if token:
                 params["page_token"] = token
             res = self._req(DATA_URL, "/v2/stocks/bars", params)
@@ -1072,6 +1086,9 @@ def flatten(broker, state, progress=print):
             progress(f"  Couldn't sell {sym}: {e}")
             journal("flatten_failed", mode=broker.mode, symbol=sym, error=str(e))
     state["flattened"] = True
+    for f in state.get("fast", []):
+        if f.get("status") in ("entering", "open"):
+            f.update(status="closed", how="closed before the bell", result=f.get("result") or "closed")
     save_day_state(broker.mode, state)
     journal("flatten", mode=broker.mode, sold=sold)
     if not sold:
@@ -1477,8 +1494,9 @@ def place_trade(plan, t, o, i):
     return order
 
 
-def day_tick(b, settings, state, progress=print):
-    """One step of day trading. Returns (plan or None, seconds until the next step, finished for today)."""
+def day_tick(b, settings, state, progress=print, make_plan=None, every_min=None):
+    """One step of day trading. Returns (plan or None, seconds until the next step, finished for today).
+    make_plan/every_min let fast mode swap in its own planner and pace."""
     d = settings["day"]
     clock = b.clock()
     left = minutes_until_close(clock)
@@ -1486,8 +1504,8 @@ def day_tick(b, settings, state, progress=print):
         progress(f"[{dt.datetime.now(ET):%H:%M} ET] Closing all day positions before the bell...")
         flatten(b, state, progress)
         return None, 0, True
-    plan = DayPlan(b, settings, state, left, progress)
-    wait = max(min(d["check_every_min"], left - d["flatten_min_before_close"]), 0.5) * 60
+    plan = (make_plan or DayPlan)(b, settings, state, left, progress)
+    wait = max(min(every_min or d["check_every_min"], left - d["flatten_min_before_close"]), 0.5) * 60
     return plan, wait, False
 
 

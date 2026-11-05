@@ -123,6 +123,26 @@ The **Live** tab is for watching the bot work:
 
 Bigger trades, and trades from bots you didn't tick, still wait for your Approve. All the normal limits still apply. In live mode, every trade always asks.
 
+## Fast mode (stock day trading)
+Day trading happens on the live 1- and 5-minute charts, but Claude takes too long to answer to react to every tick. Fast mode splits the job:
+
+1. **Claude arms setups:** every 5 minutes it looks at 1-minute data and picks a setup. Each setup is an **opening range breakout** (a break above the first 5 minutes' high on a busy stock) or a **VWAP pullback** (a bounce off VWAP in an uptrend), with a trigger price, a stop-loss and a target. The app checks each one against your limits and works out the number of shares from your max loss per trade.
+2. **You approve arming it**, or auto-approve does it on paper. The setup stays armed for up to 20 minutes.
+3. **The app pulls the trigger:** it checks the price every 2 seconds. When the price trades above the trigger, it buys straight away with a bracket order, so the stop-loss and target are at Alpaca from the moment it fills.
+
+**Safety rules in code** (Settings → Day trading):
+- It won't chase a price already 0.3% past the trigger.
+- It skips wide bid/ask spreads (over 0.15%) and out-of-date prices.
+- It cancels an entry that hasn't filled after 30 seconds.
+- It pauses 15 minutes after a loss and stops after 3 losing trades in a day.
+- It allows at most 2 fast trades open at once.
+- A **time stop** sells a trade that hasn't reached its target or stop after 45 minutes.
+- The daily goals, run hours, trade limits and selling before the bell all still apply.
+
+Turn it on under Live → Day trading → Goals & hours → **Fast mode**. Armed setups appear on the Live tab with a countdown and a **Cancel** button.
+
+Price data comes from Alpaca's free IEX feed, which covers only a small slice of trading, so VWAP and volume readings are rough. Switching **Price data feed** to SIP in Settings needs Alpaca's paid data plan. Fast mode is new and has only been tested with simulated prices, so run it on paper first.
+
 ## Crypto day trading
 Short crypto trades, like stock day trading but adjusted for crypto's 24/7 market. Start and stop it on the **Live** tab or the Bot page.
 
@@ -298,7 +318,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py
+python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py test_fast.py
 ```
 No network or keys needed.
 

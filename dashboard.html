@@ -238,6 +238,7 @@ dl.profile dt { color: var(--muted); } dl.profile dd { margin: 0; overflow-wrap:
 .lesson { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border); }
 .lesson p { margin: 0; } .lesson .grow { flex: 1; }
 .learn-bot { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.fast-box { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--border); }
 .crypto-extras { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .crypto-extras label > input[type=text] { width: 100%; }
 .phone-steps { display: grid; gap: 14px; }
@@ -772,6 +773,18 @@ const LABELS = {
   "crypto_day.max_risk_per_trade_usd": ["Max loss per crypto day trade ($)", "If its stop-loss is hit."],
   "crypto_day.max_stop_loss_pct": ["Widest stop-loss (%)", ""],
   "crypto_day.max_take_profit_pct": ["Furthest target (%)", ""],
+  fast_mode: ["Fast mode (day trading)", "Claude arms setups; the app enters within seconds when one triggers."],
+  fast_orb: ["Fast: opening range breakout setups", ""],
+  fast_vwap_pullback: ["Fast: VWAP pullback setups", ""],
+  fast_plan_every_min: ["Fast: Claude looks for setups every (min)", ""],
+  fast_watch_sec: ["Fast: check armed prices every (seconds)", "2 is plenty for 1-minute setups."],
+  fast_arm_minutes: ["Fast: longest a setup stays armed (min)", ""],
+  max_chase_pct: ["Fast: don't chase more than (%) past the trigger", "If the price already ran further, it waits or skips."],
+  max_spread_pct: ["Fast: skip if the bid/ask gap is over (%)", ""],
+  time_stop_min: ["Fast: sell a trade after (min)", "If it hasn't hit its target or stop. 0 = hold until the close."],
+  cooldown_after_loss_min: ["Fast: pause after a losing trade (min)", ""],
+  max_losses_per_day: ["Fast: stop after this many losing trades a day", "0 = no limit."],
+  max_open_fast_trades: ["Fast: open fast trades at once", ""],
   around_the_clock: ["Crypto day trading 24/7", "Trade day and night, weekends too. Ignores run hours and the close-all time; trades are sold at their target, stop-loss, or after the hours limit."],
   max_hold_hours: ["Sell a crypto day trade after (hours)", "0 = no limit. Keeps trades from sitting open, especially in 24/7 mode."],
   meme_max_order_usd: ["Largest meme coin trade ($)", "DOGE, SHIB, PEPE, BONK, WIF, TRUMP: they swing 10–20% a day, so keep these small."],

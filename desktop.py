@@ -23,6 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import fast as FT
 import features as F
 import learn as L
 import market as M
@@ -167,6 +168,9 @@ class App:
         self._goal_note = set()
         self.updated_files = []                  # files changed by the update installed at startup
         self._lessons = None
+        self.fast = FT.Engine(log=self.log, notify=self.notify)  # fast mode: watches armed day-trade setups
+        self.fast_thread = None
+        self.fast_gen = 0                        # each day-trading start gets its own fast loop
         self.reviewer = L.AutoReviewer()         # each bot reviews its own trades once a day
         T.knowledge_hook = L.make_hook(self.settings, lambda: self.lessons, lambda: self.settings()["mode"])
 
@@ -561,6 +565,7 @@ class App:
                                                        "status IN ('protected','unprotected') AND target IS NOT NULL", (b.mode,))
                          if norm(sy) == norm(sym)],
             "bots": self._bots_today(),
+            "fast": self.fast.view(self.day_state) if self.settings()["day"].get("fast_mode") or self.fast.armed else None,
             "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
                       "losses": sum(1 for t in closed if t["pnl"] < 0), "realized": sum(t["pnl"] for t in closed),
                       "unrealized": sum(r["unrealized_pl"] for r in rows), "fills": len(today_fills)},
@@ -584,6 +589,8 @@ class App:
                         "portfolio": value,
                         "run_from": sec.get("run_from_hhmm", 0), "run_to": sec.get("run_to_hhmm", 0),
                         "every": sec.get("check_every_min")}
+        dd = s["day"]
+        out["day"].update({k: dd.get(k) for k in ("fast_mode", "fast_orb", "fast_vwap_pullback", "time_stop_min", "fast_plan_every_min")})
         cd = s["crypto_day"]
         out["crypto_day"].update({"around_the_clock": bool(cd.get("around_the_clock")), "max_hold_hours": cd.get("max_hold_hours", 0),
                                   "close_all": cd.get("close_all_hhmm"), "watchlist": cd["watchlist"],
@@ -928,7 +935,11 @@ class App:
         self.day_stop.clear()
         self.day_thread = threading.Thread(target=self._day_loop, args=(b, s, state), daemon=True)
         self.day_thread.start()
-        self.log("Day trading started.")
+        self.fast_gen += 1
+        self.fast_thread = threading.Thread(target=self._fast_loop, args=(b, state, self.fast_gen), daemon=True)
+        self.fast_thread.start()
+        self.log("Day trading started" + (" in fast mode: Claude arms setups, the app enters within seconds when they trigger."
+                                          if s["day"].get("fast_mode") else "."))
 
     def _day_loop(self, b, s, state):
         progress = self.set_busy("Day trading")
@@ -948,8 +959,12 @@ class App:
                         self.day_next = None
                         self.day_stop.wait(60)
                         continue
+                cur = self.settings()
+                fast_on = cur["day"].get("fast_mode")
+                make = (lambda b_, s_, st_, left, prog: FT.FastPlan(b_, cur, st_, left, self.fast, prog, cur["market"]["data_feed"])) if fast_on else None
                 try:
-                    plan, wait, done = T.day_tick(b, s, state, progress=progress)
+                    plan, wait, done = T.day_tick(b, cur if fast_on else s, state, progress=progress, make_plan=make,
+                                                  every_min=cur["day"]["fast_plan_every_min"] if fast_on else None)
                 except Exception as e:
                     self.log(f"Day trading: check skipped: {e}")
                     T.journal("day_error", mode=b.mode, error=str(e))
@@ -968,8 +983,36 @@ class App:
             self.day_next = None
             self.forget()
 
+    def _fast_loop(self, b, state, gen):
+        """Fast mode: check armed setups every couple of seconds and manage fast trades. Idle when fast mode is off."""
+        def gate():
+            s = self.settings()
+            if s["mode"] == "live" and not self.live_ok:
+                return "live trading isn't confirmed for this session"
+            if self.bot_gate("day", s["day"]) != "ok":
+                return self.bot_status.get("day") or "outside the day bot's run hours"
+            try:
+                if T.minutes_until_close(b.clock()) <= s["day"]["no_new_entries_min_before_close"]:
+                    return "too close to the market close"
+            except RuntimeError as e:
+                return f"couldn't check the market clock ({e})"
+            return ""
+        while not self.day_stop.is_set() and not self.stopping.is_set() and gen == self.fast_gen:
+            s = self.settings()
+            if not s["day"].get("fast_mode"):
+                self.day_stop.wait(5)
+                continue
+            try:
+                with self.lock:
+                    self.fast.tick(b, s, state, gate, feed=s["market"]["data_feed"])
+            except Exception as e:  # noqa: BLE001 - shown once, retried next pass
+                if self.due("fast-error", 300):
+                    self.log(f"Fast mode problem: {e}")
+            self.day_stop.wait(max(1, s["day"].get("fast_watch_sec", 2)))
+
     def stop_day(self):
         self.day_stop.set()
+        self.fast.disarm(None, "cancelled (day trading stopped)")
         self.log("Day trading stopped. Open day trades keep their stop-loss and take-profit orders until "
                  "the close; use 'Close day trades now' to sell them.")
 
@@ -980,6 +1023,7 @@ class App:
         with self.lock:
             self.day_stop.set()
             state = T.load_day_state(b)
+            self.fast.disarm(None, "cancelled (closing day trades)")
             self.log("Closing all day positions...")
             T.flatten(b, state, progress=self.log)
             self.day_state = state
@@ -1234,6 +1278,8 @@ def make_handler(app, shutdown, restart=lambda: None):
                     app.stop_day()
                 elif path == "/api/flatten":
                     app.flatten_now()
+                elif path == "/api/fast/disarm":
+                    app.fast.disarm(str(body.get("id", "")) or None, "cancelled by you")
                 elif path == "/api/confirm-live":
                     app.confirm_live(body.get("text", ""))
                 elif path == "/api/settings":
