@@ -928,6 +928,8 @@ Propose at most 2 actions, or none. Rules:
   the target at least 1.5x the stop distance.
 - "sell": close a whole open day trade in that coin (only coins in open_day_trades). Set the numbers to 0.
 - Only enter on a clear setup visible in the data; most checks should end with no trade. Never chase a move.
+- Volume in this data comes only from Alpaca's own crypto venue, a small slice of the market, so it is often
+  tiny or zero (especially at night). Don't read low or zero volume as a signal; judge from price structure.
 - If there is a daily close-all time, don't open new trades shortly before it. If the bot trades around the clock,
   every trade is sold after max_hold_hours anyway, so only take setups that should play out within that time.
 - Costs: Alpaca charges about 0.25% each way on market orders (about 0.5% round trip) plus the bid/ask spread.

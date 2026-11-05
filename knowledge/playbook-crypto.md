@@ -9,3 +9,4 @@
 - Meme coins: most are 85–96% below their peaks, crash together, and are heavily promoted by paid, undisclosed influencers. TRUMP has about 80% of supply with insiders. Trade them only with small size, on a clear setup with strong volume, never because they're already up big or "trending".
 - Social sentiment follows price more than it predicts it, and social posts can be used to manipulate bots. Ignore hype; use price and volume only.
 - No intraday crypto strategy has proven, after-fee evidence for retail traders. Prefer BTC and ETH; trade with the trend, not against it.
+- Alpaca's crypto data shows volume from Alpaca's own venue only, so volume readings are thin and often zero overnight. Use price structure (ranges, highs and lows, VWAP) more than volume for crypto.

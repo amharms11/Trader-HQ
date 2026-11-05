@@ -44,7 +44,9 @@ Rules:
 - Only in range-bound or up-trending conditions. In a steady selloff below VWAP with lower lows, arm nothing:
   dip-buying a falling market is how this strategy loses.
 - In thin hours (late US evening into the Asian morning, weekends) prefer BTC and ETH, smaller size, wider levels.
-- Meme coins swing harder: only on clear ranges with real volume.
+- Meme coins swing harder: only on clear, well-tested ranges.
+- Volume in this data comes only from Alpaca's own crypto venue, a small slice of the market, so it is often
+  tiny or zero (especially at night). Don't read low or zero volume as a signal; judge from price structure.
 - reason: 1-2 plain sentences a beginner can follow. risk: the main way it could fail.
 - outlook: 1-2 sentences on the market right now, honest about uncertainty."""
 
