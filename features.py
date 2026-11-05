@@ -1064,7 +1064,7 @@ def crypto_day_limits(c, sym):
     return c["max_order_usd"], c["max_stop_loss_pct"], c["max_take_profit_pct"]
 
 
-def check_crypto_day(t, settings, acct, quotes, open_rows, entries_today, to_close_all, held_value):
+def check_crypto_day(t, settings, acct, quotes, open_rows, entries_today, to_close_all, held_value, min_target=None):
     c = settings["crypto_day"]
     sym, side = t["symbol"], t["side"]
     if side not in ("buy", "sell"):
@@ -1097,8 +1097,9 @@ def check_crypto_day(t, settings, acct, quotes, open_rows, entries_today, to_clo
         return False, f"only {T.money(acct['cash'])} cash is available", None
     if not 0.3 <= stop <= max_stop:
         return False, f"{kind}stop-loss must be between 0.3% and {max_stop:g}%", None
-    if not MIN_CRYPTO_DAY_TARGET <= take <= max_take:
-        return False, (f"{kind}target must be between {MIN_CRYPTO_DAY_TARGET:g}% (smaller gains are eaten by fees) "
+    min_take = MIN_CRYPTO_DAY_TARGET if min_target is None else min_target
+    if not min_take <= take <= max_take:
+        return False, (f"{kind}target must be between {min_take:g}% (smaller gains are eaten by fees) "
                        f"and {max_take:g}%"), None
     risk = amount * stop / 100
     if risk > c["max_risk_per_trade_usd"]:

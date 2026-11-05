@@ -158,6 +158,17 @@ Short crypto trades, like stock day trading but adjusted for crypto's 24/7 marke
 
 **Coins:** the same box has one-click lists. **Blue chips** are BTC, ETH, SOL, XRP, LINK, AVAX, LTC, BCH and AAVE. **Meme coins** are DOGE, SHIB, PEPE, BONK, WIF and TRUMP. **Mix** takes the first three of each. You can also type your own list. Meme coins swing 10–20% a day and many are 85–95% below their peak, so they get stricter limits: at most $75 per trade, stops up to 8%, targets up to 20%, and only one meme trade open at a time. All of these can be changed in Settings → Crypto day trading. Targets must be at least 1%, because Alpaca charges about 0.25% each way, so a smaller gain mostly goes to fees.
 
+**Fast mode (small swings):** tick it under Goals & hours. Market orders cost about 0.25% each way, so a small swing goes almost entirely to fees. Fast mode uses limit orders instead, which cost about 0.15% each way, or about 0.3% for a round trip:
+
+- **Claude arms setups:** every 5 minutes it picks dip-buy setups. Each is "buy BTC at $X, sell at $Y, stop at $Z", with the entry at or below the price, at a support level or below VWAP.
+- **The orders sit at Alpaca:** once a setup is approved (or auto-approved on paper), a limit buy waits at the entry. When it fills, a limit sell waits at the target.
+- **The app watches the stop:** it checks the price every 2 seconds and sells at market if the stop is hit. Alpaca has no bracket orders for crypto.
+- **Unfilled buys are cancelled** when they expire (30 minutes at most) or if the price reaches the stop first.
+- **Smaller targets are allowed:** as small as 0.6%, instead of 1% for market orders.
+- **Safety limits:** at most 2 swing trades waiting or open at once, a 15-minute pause after a loss, a stop after 3 losing trades a day, plus the usual risk, meme coin and hold-time limits.
+- **The bot only buys:** it can't profit from a drop, so in a steady selloff Claude is told to arm nothing.
+- **Keep Trader HQ open and the Mac awake:** the stop is watched by the app, so it only works while the app runs.
+
 **Limits:** risk per trade, trades per day, largest trade, widest stop and target, and how much of the account one coin may take. It only trades its own positions, so crypto you hold long-term is untouched. Auto-approve treats it as part of the **Crypto** checkbox.
 
 ## Daily goals and run hours (each automatic bot)
@@ -318,7 +329,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py test_fast.py
+python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py test_fast.py test_cfast.py
 ```
 No network or keys needed.
 

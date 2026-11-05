@@ -472,6 +472,7 @@ FX.renderLive = function () {
               el("button", {class: "btn danger", type: "button", id: "liveCryptoStop", hidden: true, onclick: () => post("/api/crypto/stop", {}, "Crypto bot stopped.").then(liveTick).catch(() => {})}, "Stop crypto bot"))),
           el("div", {class: "live-bot"}, el("b", {}, "Crypto day trading"), el("span", {id: "liveCdayText", class: "hint", style: "margin:0"}),
             el("div", {id: "liveCfg-crypto_day", class: "bot-cfg"}),
+            el("div", {id: "liveCfast"}),
             el("div", {class: "row"},
               el("button", {class: "btn primary", type: "button", id: "liveCdayStart", onclick: () => post("/api/crypto-day/start", {}, "Crypto day trading started.").then(liveTick).catch(() => {})}, "Start crypto day trading"),
               el("button", {class: "btn danger", type: "button", id: "liveCdayStop", hidden: true, onclick: () => post("/api/crypto-day/stop", {}, "Crypto day trading stopped.").then(liveTick).catch(() => {})}, "Stop crypto day trading")))),
@@ -546,6 +547,7 @@ async function liveTick(first) {
     : el("div", {class: "empty"}, "No open positions."));
   for (const key of ["day", "crypto", "crypto_day"]) botConfig(key, d.bots && d.bots[key]);
   renderFast(d.fast);
+  renderCryptoFast(d.crypto_fast);
   const sc = d.score, stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
   document.getElementById("liveScore").replaceChildren(
     stat("Realized today", signed(sc.realized), tone(sc.realized)), stat("Open profit / loss", signed(sc.unrealized), tone(sc.unrealized)),
@@ -729,7 +731,8 @@ function botConfig(key, b) {
     const from = fromTime(f.from.value), to = fromTime(f.to.value);
     const patch = {daily_profit_target_pct: f.target.value || 0, daily_loss_limit_pct: f.limit.value || 0,
       run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value};
-    if (cday) Object.assign(patch, {around_the_clock: f.nonstop.checked, max_hold_hours: f.hold.value || 0, watchlist: f.coins.value});
+    if (cday) Object.assign(patch, {around_the_clock: f.nonstop.checked, max_hold_hours: f.hold.value || 0, watchlist: f.coins.value,
+      fast_mode: f.cfast.checked, fast_plan_every_min: f.cfplan.value || 5});
     if (dayBot) Object.assign(patch, {fast_mode: f.fast.checked, fast_orb: f.orb.checked, fast_vwap_pullback: f.vwap.checked,
       time_stop_min: f.tstop.value || 0, fast_plan_every_min: f.fplan.value || 5});
     try {
@@ -750,7 +753,7 @@ function botConfig(key, b) {
   setTimeout(() => { equiv(form.target, tOut); equiv(form.limit, lOut); }, 0);
   box.replaceChildren(
     el("div", {class: "row bot-today"}, el("span", {}, "Today: ", el("b", {class: tone(b.total)}, signed(b.total))),
-      el("span", {class: "muted"}, `· ${goals} · ${window_} · ` + (dayBot && b.fast_mode ? `fast mode, new setups every ${b.fast_plan_every_min || 5} min` : `every ${b.every || "?"} min`))),
+      el("span", {class: "muted"}, `· ${goals} · ${window_} · ` + ((dayBot || cday) && b.fast_mode ? `fast mode, new setups every ${b.fast_plan_every_min || 5} min` : `every ${b.every || "?"} min`))),
     el("details", {open: open}, el("summary", {}, "Goals & hours"), form));
 }
 
@@ -785,6 +788,23 @@ function renderFast(f) {
     ...open.map((t) => el("small", {style: "display:block"}, `${t.status === "entering" ? "Buying" : "In trade"}: ${t.qty} ${t.symbol} at ${fmtPrice(t.entry || t.limit)} · stop ${fmtPrice(t.stop)} · target ${fmtPrice(t.target)}${t.minutes_in != null ? ` · ${t.minutes_in} min` : ""}`)),
     ...done.map((t) => el("small", {class: "muted", style: "display:block"}, `${t.symbol} ${t.how || t.result}: `, el("span", {class: tone(t.pnl)}, signed(t.pnl || 0))))));
 }
+function renderCryptoFast(f) {
+  const box = document.getElementById("liveCfast"); if (!box) return;
+  if (!f) { box.replaceChildren(); return; }
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const act = (r) => post("/api/crypto-fast/cancel", {id: r.id}, r.status === "buying" ? "Buy cancelled." : "Selling at market.").then(liveTick).catch(() => {});
+  const rows = f.active.map((r) => el("div", {class: "lesson"},
+    el("div", {class: "grow"},
+      el("p", {}, el("b", {}, r.symbol), r.status === "buying" ? ` waiting to buy ${money(r.amount)} at ${fmtPrice(r.entry)}` : ` in trade from ${fmtPrice(r.entry)}`),
+      el("small", {class: "muted"}, `Sell at ${fmtPrice(r.target)} · stop ${fmtPrice(r.stop)}${r.seconds_left != null ? " · " + mmss(r.seconds_left) + " left" : ""}${r.reason ? " · " + r.reason : ""}`)),
+    el("button", {class: "btn small", type: "button", onclick: () => (r.status === "buying" || confirm(`Sell the ${r.symbol} swing trade at market now?`)) && act(r)}, r.status === "buying" ? "Cancel" : "Sell now")));
+  box.replaceChildren(el("div", {class: "fast-box"},
+    el("b", {}, "Fast mode (swings)"),
+    el("small", {class: "muted", style: "display:block"}, `Today: `, el("span", {class: tone(f.today_pnl)}, signed(f.today_pnl)), ` before fees · ${f.wins} wins / ${f.losses} losses`),
+    f.status ? el("small", {class: "muted", style: "display:block"}, f.status) : null,
+    ...(rows.length ? rows : [el("small", {class: "muted", style: "display:block"}, "No swing trades waiting or open.")]),
+    ...f.recent.map((r) => el("small", {class: "muted", style: "display:block"}, `${r.symbol} ${r.how}: `, el("span", {class: tone(r.pnl)}, signed(r.pnl || 0))))));
+}
 function cryptoDayExtras(b) {
   const lists = b.coin_lists || {blue: [], meme: []};
   const memes = new Set(lists.meme);
@@ -806,6 +826,11 @@ function cryptoDayExtras(b) {
   };
   setTimeout(() => toggle(!!b.around_the_clock), 0);
   return el("div", {class: "crypto-extras"},
+    el("label", {class: "check"}, el("input", {type: "checkbox", name: "cfast", checked: !!b.fast_mode}),
+      el("span", {}, "Fast mode: catch small swings with limit orders", el("small", {style: "display:block"},
+        `Claude arms dip-buys at support every few minutes. A limit buy waits at the entry and a limit sell at the target (about 0.15% fee each way instead of 0.25%), so targets can be as small as ${b.fast_min_target_pct || 0.6}%. The app watches the stop every 2 seconds, so keep Trader HQ open and the Mac awake.`))),
+    el("div", {class: "form-grid"},
+      el("label", {}, "Claude looks for swings every (min)", el("input", {type: "number", name: "cfplan", min: 2, max: 60, step: 1, value: b.fast_plan_every_min || 5}))),
     el("label", {class: "check"}, nonstop, el("span", {}, "Trade around the clock (24/7)", hours)),
     el("div", {class: "form-grid"},
       el("label", {}, "Sell a trade after (hours)", el("small", {}, "0 = no limit"), el("input", {type: "number", name: "hold", min: 0, max: 168, step: 1, value: b.max_hold_hours ?? 8}))),

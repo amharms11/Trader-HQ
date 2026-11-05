@@ -23,6 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import cfast as CF
 import fast as FT
 import features as F
 import learn as L
@@ -171,6 +172,7 @@ class App:
         self.fast = FT.Engine(log=self.log, notify=self.notify)  # fast mode: watches armed day-trade setups
         self.fast_thread = None
         self.fast_gen = 0                        # each day-trading start gets its own fast loop
+        self._cfast = None
         self.reviewer = L.AutoReviewer()         # each bot reviews its own trades once a day
         T.knowledge_hook = L.make_hook(self.settings, lambda: self.lessons, lambda: self.settings()["mode"])
 
@@ -198,6 +200,28 @@ class App:
         if self._store is None:
             self._store = F.Store(self.market.db)
         return self._store
+
+    @property
+    def cfast(self):
+        if self._cfast is None:
+            self._cfast = CF.Engine(self.store, log=self.log, notify=self.notify)
+        return self._cfast
+
+    def cfast_loop(self):
+        """Fast crypto: watch waiting limit buys and open swing trades every couple of seconds, around the clock."""
+        while not self.stopping.is_set():
+            wait = 5
+            try:
+                s = self.settings()
+                if T.has_keys(s["mode"]) and self.can_trade_unattended():
+                    b = self.data_broker()
+                    if self.cfast.store.rows(b.mode, CF.ACTIVE):
+                        self.cfast.tick(b, s, self.market)
+                        wait = max(1, s["crypto_day"].get("fast_watch_sec", 2))
+            except Exception as e:  # noqa: BLE001 - shown once, retried
+                if self.due("cfast-error", 300):
+                    self.log(f"Fast crypto problem: {e}")
+            self.stopping.wait(wait)
 
     @property
     def lessons(self):
@@ -411,14 +435,18 @@ class App:
                     self.cday_next = None
                     self.cday_stop.wait(60)
                     continue
+                fast_on = sec.get("fast_mode")
                 try:
-                    self.add_plan(F.CryptoDayPlan(b, s, self.market, self.store, progress=progress), DAY_TTL)
+                    if fast_on:
+                        self.add_plan(CF.Plan(b, s, self.market, self.cfast, progress=progress), DAY_TTL)
+                    else:
+                        self.add_plan(F.CryptoDayPlan(b, s, self.market, self.store, progress=progress), DAY_TTL)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"Crypto day trading: check skipped: {e}")
                 finally:
                     self.busy = ""
                 self.forget()
-                wait = max(5, sec["check_every_min"]) * 60
+                wait = max(2 if fast_on else 5, sec["fast_plan_every_min"] if fast_on else sec["check_every_min"]) * 60
                 self.cday_next = time.time() + wait
                 self.cday_stop.wait(wait)
         finally:
@@ -566,6 +594,7 @@ class App:
                          if norm(sy) == norm(sym)],
             "bots": self._bots_today(),
             "fast": self.fast.view(self.day_state) if self.settings()["day"].get("fast_mode") or self.fast.armed else None,
+            "crypto_fast": self.cfast.view(b.mode) if self.settings()["crypto_day"].get("fast_mode") or self.cfast.store.rows(b.mode, CF.ACTIVE) else None,
             "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
                       "losses": sum(1 for t in closed if t["pnl"] < 0), "realized": sum(t["pnl"] for t in closed),
                       "unrealized": sum(r["unrealized_pl"] for r in rows), "fills": len(today_fills)},
@@ -592,7 +621,9 @@ class App:
         dd = s["day"]
         out["day"].update({k: dd.get(k) for k in ("fast_mode", "fast_orb", "fast_vwap_pullback", "time_stop_min", "fast_plan_every_min")})
         cd = s["crypto_day"]
-        out["crypto_day"].update({"around_the_clock": bool(cd.get("around_the_clock")), "max_hold_hours": cd.get("max_hold_hours", 0),
+        out["crypto_day"].update({"fast_mode": bool(cd.get("fast_mode")), "fast_plan_every_min": cd.get("fast_plan_every_min"),
+                                  "fast_min_target_pct": cd.get("fast_min_target_pct"),
+                                  "around_the_clock": bool(cd.get("around_the_clock")), "max_hold_hours": cd.get("max_hold_hours", 0),
                                   "close_all": cd.get("close_all_hhmm"), "watchlist": cd["watchlist"],
                                   "coin_lists": {"blue": T.BLUE_CHIP_COINS, "meme": T.MEME_COINS}})
         return out
@@ -1278,6 +1309,8 @@ def make_handler(app, shutdown, restart=lambda: None):
                     app.stop_day()
                 elif path == "/api/flatten":
                     app.flatten_now()
+                elif path == "/api/crypto-fast/cancel":
+                    app.cfast.cancel(app.broker(), str(body.get("id", "")))
                 elif path == "/api/fast/disarm":
                     app.fast.disarm(str(body.get("id", "")) or None, "cancelled by you")
                 elif path == "/api/confirm-live":
@@ -1464,6 +1497,7 @@ def serve(open_win=True, port=PORT):
         app.log("Trader HQ was updated to the latest version.")
     threading.Thread(target=app.update_loop, daemon=True).start()
     threading.Thread(target=app.scheduler_loop, daemon=True).start()
+    threading.Thread(target=app.cfast_loop, daemon=True).start()
     threading.Thread(target=lambda: (app.phone_sync(), app.keep_awake()), daemon=True).start()
     print(f"Trader HQ dashboard: {url}  (press Quit in the dashboard, or Ctrl+C here, to stop)")
     if open_win:

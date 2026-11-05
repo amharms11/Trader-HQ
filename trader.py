@@ -172,6 +172,16 @@ DEFAULT_SETTINGS = {
         "meme_max_stop_loss_pct": 8,        # ...wider stops, because they swing 10-20% in a day...
         "meme_max_take_profit_pct": 20,
         "max_meme_trades_open": 1,          # ...and only this many open at once
+        # Fast mode: catch small swings with limit orders (about 0.15% fee each way instead of 0.25%).
+        # Claude arms dip-buy setups; a limit buy waits at the entry, a limit sell at the target, the app watches the stop.
+        "fast_mode": False,
+        "fast_plan_every_min": 5,           # how often Claude looks for swing setups
+        "fast_watch_sec": 2,                # how often the app checks the price against stops
+        "fast_arm_minutes": 30,             # longest a limit buy waits to fill
+        "fast_min_target_pct": 0.6,         # smallest target allowed (the limit-order round trip costs about 0.3%)
+        "max_open_fast_trades": 2,
+        "cooldown_after_loss_min": 15,
+        "max_losses_per_day": 3,
         "daily_profit_target_pct": 0,
         "daily_loss_limit_pct": 0,
         "run_from_hhmm": 800,
