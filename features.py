@@ -699,6 +699,23 @@ class CryptoPlan(T.Plan):
         return order
 
 
+def crypto_lists(market):
+    """Every crypto Alpaca can trade against the US dollar right now (from its asset list), split into blue chips
+    and meme coins. Stablecoins are left out: they're pegged to $1, so there's nothing to trade."""
+    try:
+        market.ensure_assets()
+        syms = [s for s in market.db.symbols("crypto") if s.endswith("/USD") and s.split("/")[0] not in T.STABLECOINS]
+    except Exception:  # noqa: BLE001 - fall back to the built-in lists
+        syms = []
+    if not syms:
+        return {"blue": list(T.BLUE_CHIP_COINS), "meme": list(T.MEME_COINS), "all": T.BLUE_CHIP_COINS + T.MEME_COINS}
+    first = {s: i for i, s in enumerate(T.BLUE_CHIP_COINS + T.MEME_COINS)}  # majors first, then A-Z
+    order = lambda s: (first.get(s, len(first)), s)
+    meme = sorted((s for s in syms if T.is_meme(s)), key=order)
+    blue = sorted((s for s in syms if not T.is_meme(s)), key=order)
+    return {"blue": blue, "meme": meme, "all": blue + meme}
+
+
 def fit_amount(t, cap):
     """A copy of a dollar-amount crypto buy cut down to fit under cap (never below Alpaca's $10 minimum)."""
     if cap and t.get("side") == "buy" and (t.get("amount_usd") or 0) > cap >= 10:

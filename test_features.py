@@ -87,6 +87,23 @@ class Base(TM.Base):
         self.store = F.Store(self.mk.db)
 
 
+class CoinListTests(Base):
+    def test_lists_come_from_alpaca_tradable_usd_pairs(self):
+        rows = [(sym, sym, "crypto", "crypto", "CRYPTO", 1, 1, 0, "[]") for sym in
+                ("BTC/USD", "ETH/USD", "AVAX/USD", "DOGE/USD", "PENGU/USD", "USDC/USD", "USDT/USD", "ETH/BTC", "LINK/USDT")]
+        self.mk.db.replace_assets(rows)
+        lists = F.crypto_lists(self.mk)
+        self.assertEqual(lists["blue"], ["BTC/USD", "ETH/USD", "AVAX/USD"])   # majors first; no stablecoins, no non-USD pairs
+        self.assertEqual(lists["meme"], ["DOGE/USD", "PENGU/USD"])            # PENGU recognised as a meme coin
+        self.assertEqual(lists["all"], lists["blue"] + lists["meme"])
+        self.assertTrue(T.is_meme("PENGU/USD") and not T.is_meme("AVAX/USD"))
+
+    def test_falls_back_to_built_in_lists(self):
+        self.mk.db.replace_assets([])
+        with mock.patch.object(self.mk, "ensure_assets", side_effect=RuntimeError("offline")):
+            self.assertEqual(F.crypto_lists(self.mk)["blue"], T.BLUE_CHIP_COINS)
+
+
 class ScheduleTests(unittest.TestCase):
     def test_next_run(self):
         self.assertEqual(F.next_run("weekly", 0, D0), D0)                       # Monday -> today

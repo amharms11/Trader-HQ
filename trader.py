@@ -312,8 +312,14 @@ BLUE_CHIP_COINS = ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "LINK/USD", "AVAX
 MEME_COINS = ["DOGE/USD", "SHIB/USD", "PEPE/USD", "BONK/USD", "WIF/USD", "TRUMP/USD"]
 
 
+# Meme coin names, so any Alpaca lists later are treated as meme coins too (smaller size, wider stops).
+MEME_NAMES = {m.split("/")[0] for m in MEME_COINS} | {"FLOKI", "PENGU", "FARTCOIN", "POPCAT", "MOODENG", "BRETT", "MEW",
+                                                      "SPX", "TURBO", "NEIRO", "GOAT", "PNUT", "MOG", "BOME", "WOJAK", "DOGS"}
+STABLECOINS = {"USDC", "USDT", "DAI", "PYUSD", "USDG", "TUSD", "FDUSD", "USDE", "RLUSD", "USD1", "GUSD", "USDP"}
+
+
 def is_meme(symbol):
-    return str(symbol).upper().split("/")[0] in {m.split("/")[0] for m in MEME_COINS}
+    return str(symbol).upper().split("/")[0] in MEME_NAMES
 
 
 AUTO_KINDS = {"run": "long_term", "day": "day", "options": "options", "crypto": "crypto", "crypto_day": "crypto"}

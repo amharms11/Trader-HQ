@@ -838,7 +838,9 @@ function cryptoDayExtras(b) {
     el("div", {class: "row"}, el("span", {class: "muted"}, "Quick pick:"),
       el("button", {class: "btn small", type: "button", onclick: pick(lists.blue)}, "Blue chips"),
       el("button", {class: "btn small", type: "button", onclick: pick(lists.meme)}, "Meme coins"),
-      el("button", {class: "btn small", type: "button", onclick: pick([...lists.blue.slice(0, 3), ...lists.meme.slice(0, 3)])}, "Mix")),
+      el("button", {class: "btn small", type: "button", onclick: pick([...lists.blue.slice(0, 3), ...lists.meme.slice(0, 3)])}, "Mix"),
+      el("button", {class: "btn small", type: "button", onclick: pick(lists.all || [...lists.blue, ...lists.meme])}, `All Alpaca coins (${(lists.all || [...lists.blue, ...lists.meme]).length})`)),
+    el("small", {class: "muted"}, "Lists come from Alpaca's tradable coins (US dollar pairs, no stablecoins). Watching more coins means more data for Claude to read each check, so each check costs a little more with an API key."),
     el("p", {class: "hint", style: "margin:0"}, "Blue chips (Bitcoin, Ethereum, Solana...) are steadier and cheaper to trade. Meme coins (Dogecoin, Shiba Inu, Pepe...) can jump or crash 10–20% in a day, many are down 85–95% from their peak, and online hype around them is often paid. Start with blue chips on paper."));
 }
 

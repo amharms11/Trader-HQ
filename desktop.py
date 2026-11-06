@@ -626,7 +626,7 @@ class App:
                                   "fast_min_target_pct": cd.get("fast_min_target_pct"),
                                   "around_the_clock": bool(cd.get("around_the_clock")), "max_hold_hours": cd.get("max_hold_hours", 0),
                                   "close_all": cd.get("close_all_hhmm"), "watchlist": cd["watchlist"],
-                                  "coin_lists": {"blue": T.BLUE_CHIP_COINS, "meme": T.MEME_COINS}})
+                                  "coin_lists": self.cached("coin_lists", 3600, lambda: F.crypto_lists(self.market))})
         return out
 
     def data_broker(self):
