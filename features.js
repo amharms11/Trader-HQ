@@ -547,6 +547,7 @@ async function liveTick(first) {
     : el("div", {class: "empty"}, "No open positions."));
   for (const key of ["day", "crypto", "crypto_day"]) botConfig(key, d.bots && d.bots[key]);
   renderFast(d.fast);
+  renderInPlay(d.in_play);
   renderCryptoFast(d.crypto_fast);
   const sc = d.score, stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
   document.getElementById("liveScore").replaceChildren(
@@ -733,7 +734,7 @@ function botConfig(key, b) {
       run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value};
     if (cday) Object.assign(patch, {around_the_clock: f.nonstop.checked, max_hold_hours: f.hold.value || 0, watchlist: f.coins.value,
       fast_mode: f.cfast.checked, fast_plan_every_min: f.cfplan.value || 5});
-    if (dayBot) Object.assign(patch, {fast_mode: f.fast.checked, fast_orb: f.orb.checked, fast_vwap_pullback: f.vwap.checked,
+    if (dayBot) Object.assign(patch, {scan_all: f.scanall.checked, fast_mode: f.fast.checked, fast_orb: f.orb.checked, fast_vwap_pullback: f.vwap.checked,
       time_stop_min: f.tstop.value || 0, fast_plan_every_min: f.fplan.value || 5});
     try {
       await api("/api/settings", {settings: {[key]: patch}});
@@ -760,6 +761,8 @@ function botConfig(key, b) {
 
 function fastExtras(b) {
   return el("div", {class: "crypto-extras"},
+    el("label", {class: "check"}, el("input", {type: "checkbox", name: "scanall", checked: !!b.scan_all}),
+      el("span", {}, "Scan all stocks for stocks in play", el("small", {style: "display:block"}, `Before each check, the app scans every stock Alpaca lists (code only, no Claude cost) and adds the top ${b.scan_top || 10} that are moving up on unusual volume: price $5+, heavily traded, volume 2x+ normal for the time of day. Your own watchlist stays in too. Filters are in Settings > Day trading.`))),
     el("label", {class: "check"}, el("input", {type: "checkbox", name: "fast", checked: !!b.fast_mode}),
       el("span", {}, "Fast mode", el("small", {style: "display:block"}, "Claude arms setups every few minutes from 1-minute data. The app watches prices every 2 seconds and buys the moment one triggers, with the stop-loss and target already attached. Approve setups yourself, or let auto-approve arm them on paper."))),
     el("div", {class: "row"}, el("span", {class: "muted"}, "Setups:"),
@@ -769,6 +772,16 @@ function fastExtras(b) {
       el("label", {}, "Claude looks for setups every (min)", el("input", {type: "number", name: "fplan", min: 2, max: 60, step: 1, value: b.fast_plan_every_min || 5})),
       el("label", {}, "Sell a fast trade after (min)", el("small", {}, "0 = hold until target, stop or the close"), el("input", {type: "number", name: "tstop", min: 0, max: 390, step: 1, value: b.time_stop_min ?? 45}))),
     el("p", {class: "hint", style: "margin:0"}, "Built-in safety: no chasing a price that already ran past the trigger, no wide spreads or stale prices, a 15-minute pause after a loss, and no new fast trades after 3 losses in a day. Change these in Settings > Day trading."));
+}
+function renderInPlay(p) {
+  let box = document.getElementById("liveInPlay");
+  if (!box) { const anchor = document.getElementById("liveFast"); if (!anchor) return; box = el("div", {id: "liveInPlay"}); anchor.before(box); }
+  if (!p) { box.replaceChildren(); return; }
+  box.replaceChildren(el("div", {class: "fast-box"}, el("b", {}, "Stocks in play"),
+    el("small", {class: "muted", style: "display:block"}, `Scanned ${p.scanned.toLocaleString()} stocks at ${new Date(p.time * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}.`),
+    p.rows.length ? el("div", {class: "row", style: "flex-wrap:wrap;gap:6px"}, ...p.rows.map((r) => el("a", {class: "chip", href: "#s/" + enc(r.symbol), title: r.name},
+      `${r.symbol} +${r.change_pct}% · ${r.rel_volume}x vol`)))
+      : el("small", {class: "muted"}, "None meet the filters right now.")));
 }
 function renderFast(f) {
   const box = document.getElementById("liveFast"); if (!box) return;

@@ -699,6 +699,32 @@ class CryptoPlan(T.Plan):
         return order
 
 
+IEX_SHARE = 0.02  # the free IEX feed sees roughly 2% of US stock volume
+
+
+def stocks_in_play(market, d, now=None):
+    """Scan every stock Alpaca lists (code only, no Claude) and return the top "stocks in play": price over the
+    minimum, heavily traded, volume well above normal for this time of day, and up on the day. Each row has the
+    symbol, % change, relative volume and estimated dollar volume."""
+    now = now or dt.datetime.now(T.ET)
+    elapsed = (now.hour * 60 + now.minute) - (9 * 60 + 30)
+    session = min(1.0, max(elapsed, 15) / 390)             # share of the trading day gone so far
+    res = market.scan("stock", {"price_min": d["scan_min_price"], "change_min": d["scan_min_change_pct"]},
+                      sort="volume", limit=3000)
+    scale = 1 / IEX_SHARE if market.feed() == "iex" else 1
+    rows = []
+    for r in res["rows"]:
+        vol, prev = r.get("volume") or 0, r.get("prev_volume") or 0
+        dollars = vol * r["price"] * scale
+        rel = vol / (prev * session) if prev else None
+        if dollars < d["scan_min_dollar_volume_m"] * 1e6 or rel is None or rel < d["scan_min_rel_volume"]:
+            continue
+        rows.append({"symbol": r["symbol"], "name": r.get("name", ""), "change_pct": round(r["change_pct"], 2),
+                     "rel_volume": round(rel, 1), "dollar_volume_m": round(dollars / 1e6)})
+    rows.sort(key=lambda x: x["rel_volume"], reverse=True)
+    return {"scanned": res["scanned"], "rows": rows[:int(d["scan_top"])]}
+
+
 def crypto_lists(market, load=True):
     """Every crypto Alpaca can trade against the US dollar right now (from its asset list), split into blue chips
     and meme coins. Stablecoins are left out: they're pegged to $1, so there's nothing to trade.

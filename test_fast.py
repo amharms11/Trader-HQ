@@ -261,7 +261,56 @@ class EngineTests(Base):
         self.assertEqual((plan, wait, done), ("P", 300, False))
 
 
+class ScanMarket:
+    def __init__(self, feed="iex"):
+        self._feed, self.calls = feed, []
+
+    def feed(self):
+        return self._feed
+
+    def scan(self, kind, filters, sort="change_pct", limit=100, symbols=None):
+        self.calls.append((kind, filters))
+        rows = [  # symbol, price, change %, volume so far (IEX), previous day volume (IEX)
+            {"symbol": "HOT", "price": 40, "change_pct": 6.2, "volume": 90_000, "prev_volume": 60_000, "name": "Hot Co"},
+            {"symbol": "WARM", "price": 20, "change_pct": 2.5, "volume": 45_000, "prev_volume": 40_000, "name": "Warm"},
+            {"symbol": "THIN", "price": 8, "change_pct": 9.0, "volume": 2_000, "prev_volume": 500, "name": "Thin"},
+            {"symbol": "NORMAL", "price": 100, "change_pct": 1.5, "volume": 50_000, "prev_volume": 400_000, "name": "Normal"}]
+        return {"scanned": 9000, "matched": len(rows), "rows": rows}
+
+
+class ScanTests(unittest.TestCase):
+    def test_stocks_in_play(self):
+        d = T.load_settings()["day"]
+        m = ScanMarket()
+        noon = dt.datetime(2026, 11, 5, 12, 45, tzinfo=T.ET)   # half the session gone
+        res = TF.F.stocks_in_play(m, d, now=noon)
+        self.assertEqual(res["scanned"], 9000)
+        self.assertEqual([r["symbol"] for r in res["rows"]], ["HOT", "WARM"])  # THIN: too little traded; NORMAL: normal volume
+        self.assertEqual(res["rows"][0]["rel_volume"], 3.0)                    # 90k vs 60k x 0.5 of the day
+        self.assertEqual(res["rows"][0]["dollar_volume_m"], 180)               # $3.6M on IEX ~ $180M whole market
+        self.assertEqual(m.calls[0][1], {"price_min": 5, "change_min": 1})
+        d["scan_top"] = 1
+        self.assertEqual(len(TF.F.stocks_in_play(m, d, now=noon)["rows"]), 1)
+
+
 class AppTests(Base):
+    def test_scan_adds_stocks_in_play_to_the_watchlist(self):
+        app = TF.D.App(broker_factory=lambda mode: self.b)
+        app.market = ScanMarket()
+        s = T.load_settings()
+        self.assertIs(app.with_stocks_in_play(s), s)                         # off: unchanged
+        s["day"]["scan_all"] = True
+        with mock.patch.object(TF.F, "stocks_in_play", return_value={"scanned": 9000, "rows": [
+                {"symbol": "HOT", "change_pct": 6.2, "rel_volume": 3.0, "dollar_volume_m": 180, "name": ""},
+                {"symbol": "SPY", "change_pct": 1.1, "rel_volume": 2.1, "dollar_volume_m": 900, "name": ""}]}):
+            out = app.with_stocks_in_play(s)
+        self.assertEqual(out["day"]["watchlist"][-1], "HOT")                 # your list first, no duplicate SPY
+        self.assertEqual(out["day"]["watchlist"].count("SPY"), 1)
+        self.assertNotIn("HOT", T.load_settings()["day"]["watchlist"])       # saved settings untouched
+        self.assertEqual(app.in_play["rows"][0]["symbol"], "HOT")
+        with mock.patch.object(TF.F, "stocks_in_play", side_effect=RuntimeError("rate limited")):
+            self.assertEqual(app.with_stocks_in_play(s)["day"]["watchlist"], s["day"]["watchlist"])
+
     def test_disarm_api_and_live_view(self):
         app = TF.D.App(broker_factory=lambda mode: self.b)
         app.market, app._store = self.mk, self.store

@@ -174,6 +174,7 @@ class App:
         self.fast_thread = None
         self.fast_gen = 0                        # each day-trading start gets its own fast loop
         self._cfast = None
+        self.in_play = None                      # the latest "stocks in play" scan for day trading
         self.reviewer = L.AutoReviewer()         # each bot reviews its own trades once a day
         T.knowledge_hook = L.make_hook(self.settings, lambda: self.lessons, lambda: self.settings()["mode"])
 
@@ -608,6 +609,7 @@ class App:
                                                        "status IN ('protected','unprotected') AND target IS NOT NULL", (b.mode,))
                          if norm(sy) == norm(sym)],
             "bots": self._bots_today(),
+            "in_play": self.in_play,
             "fast": self.fast.view(self.day_state) if self.settings()["day"].get("fast_mode") or self.fast.armed else None,
             "crypto_fast": self.cfast.view(b.mode) if self.settings()["crypto_day"].get("fast_mode") or self.cfast.store.rows(b.mode, CF.ACTIVE) else None,
             "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
@@ -634,7 +636,7 @@ class App:
                         "run_from": sec.get("run_from_hhmm", 0), "run_to": sec.get("run_to_hhmm", 0),
                         "every": sec.get("check_every_min")}
         dd = s["day"]
-        out["day"].update({k: dd.get(k) for k in ("fast_mode", "fast_orb", "fast_vwap_pullback", "time_stop_min", "fast_plan_every_min")})
+        out["day"].update({k: dd.get(k) for k in ("fast_mode", "fast_orb", "fast_vwap_pullback", "time_stop_min", "fast_plan_every_min", "scan_all", "scan_top")})
         cd = s["crypto_day"]
         out["crypto_day"].update({"fast_mode": bool(cd.get("fast_mode")), "fast_plan_every_min": cd.get("fast_plan_every_min"),
                                   "fast_min_target_pct": cd.get("fast_min_target_pct"),
@@ -1008,11 +1010,11 @@ class App:
                         self.day_next = None
                         self.day_stop.wait(60)
                         continue
-                cur = self.settings()
+                cur = self.with_stocks_in_play(self.settings())
                 fast_on = cur["day"].get("fast_mode")
                 make = (lambda b_, s_, st_, left, prog: FT.FastPlan(b_, cur, st_, left, self.fast, prog, cur["market"]["data_feed"])) if fast_on else None
                 try:
-                    plan, wait, done = T.day_tick(b, cur if fast_on else s, state, progress=progress, make_plan=make,
+                    plan, wait, done = T.day_tick(b, cur, state, progress=progress, make_plan=make,
                                                   every_min=cur["day"]["fast_plan_every_min"] if fast_on else None)
                 except Exception as e:
                     self.log(f"Day trading: check skipped: {e}")
@@ -1031,6 +1033,30 @@ class App:
         finally:
             self.day_next = None
             self.forget()
+
+    def with_stocks_in_play(self, s):
+        """With 'scan all stocks' on, scan every listed stock and add the top stocks in play to this check's
+        day-trading watchlist (your own list stays in too)."""
+        d = s["day"]
+        if not d.get("scan_all"):
+            self.in_play = None
+            return s
+        try:
+            res = F.stocks_in_play(self.market, d)
+        except Exception as e:  # noqa: BLE001 - fall back to the normal watchlist
+            self.log(f"Day trading: stock scan skipped ({e}); using your watchlist.")
+            return s
+        self.in_play = {**res, "time": now()}
+        picks = [r["symbol"] for r in res["rows"]]
+        if picks:
+            self.log(f"Day trading: scanned {res['scanned']:,} stocks. In play: " + ", ".join(
+                f"{r['symbol']} +{r['change_pct']:g}% ({r['rel_volume']:g}x volume)" for r in res["rows"][:5]) +
+                (f" and {len(picks) - 5} more" if len(picks) > 5 else "") + ".")
+        else:
+            self.log(f"Day trading: scanned {res['scanned']:,} stocks; none meet the stocks-in-play filters right now.")
+        out = json.loads(json.dumps(s))
+        out["day"]["watchlist"] = list(dict.fromkeys(d["watchlist"] + picks))
+        return out
 
     def _fast_loop(self, b, state, gen):
         """Fast mode: check armed setups every couple of seconds and manage fast trades. Idle when fast mode is off."""

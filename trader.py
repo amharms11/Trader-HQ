@@ -97,6 +97,14 @@ DEFAULT_SETTINGS = {
         "max_take_profit_pct": 6,
         "no_new_entries_min_before_close": 30,
         "flatten_min_before_close": 10,  # sell all day positions this many minutes before the close
+        # Scan all stocks: before each check, code scans every stock Alpaca lists and adds the top "stocks in
+        # play" (busy, moving up on unusual volume) to the watchlist for that check.
+        "scan_all": False,
+        "scan_top": 10,                    # how many stocks in play to add
+        "scan_min_price": 5,
+        "scan_min_dollar_volume_m": 20,    # $ millions traded today (estimated for the whole market)
+        "scan_min_rel_volume": 2,          # volume vs. normal for this time of day
+        "scan_min_change_pct": 1,          # up at least this much today (the bot only buys)
         # Fast mode: Claude arms setups every few minutes; the app watches prices every few seconds and buys
         # the moment one triggers, with a bracket order (stop-loss and target at Alpaca).
         "fast_mode": False,
