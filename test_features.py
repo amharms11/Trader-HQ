@@ -98,6 +98,29 @@ class CoinListTests(Base):
         self.assertEqual(lists["all"], lists["blue"] + lists["meme"])
         self.assertTrue(T.is_meme("PENGU/USD") and not T.is_meme("AVAX/USD"))
 
+    def test_all_expands_in_the_app(self):
+        rows = [(sym, sym, "crypto", "crypto", "CRYPTO", 1, 1, 0, "[]") for sym in ("BTC/USD", "SOL/USD", "DOGE/USD", "USDC/USD")]
+        self.mk.db.replace_assets(rows)
+        D.save_settings({"crypto": {"watchlist": "ALL"}, "crypto_day": {"watchlist": ["all"]}})
+        app = D.App(broker_factory=lambda mode: self.b)
+        app.market = self.mk
+        s = app.settings()
+        self.assertEqual(s["crypto"]["watchlist"], ["BTC/USD", "SOL/USD", "DOGE/USD"])
+        self.assertEqual(s["crypto_day"]["watchlist"], ["BTC/USD", "SOL/USD", "DOGE/USD"])
+        self.assertTrue(s["crypto_day"]["all_coins"])
+        self.assertEqual(T.load_settings()["crypto"]["watchlist"], ["ALL"])  # saved as ALL, so new coins are picked up
+        server = D.make_server(app, port=0)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/settings", headers={"Host": f"127.0.0.1:{port}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                shown = json.loads(r.read())["settings"]
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(shown["crypto_day"]["watchlist"], ["ALL"])  # the Settings form shows ALL, so saving keeps it
+
     def test_falls_back_to_built_in_lists(self):
         self.mk.db.replace_assets([])
         with mock.patch.object(self.mk, "ensure_assets", side_effect=RuntimeError("offline")):

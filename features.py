@@ -699,11 +699,13 @@ class CryptoPlan(T.Plan):
         return order
 
 
-def crypto_lists(market):
+def crypto_lists(market, load=True):
     """Every crypto Alpaca can trade against the US dollar right now (from its asset list), split into blue chips
-    and meme coins. Stablecoins are left out: they're pegged to $1, so there's nothing to trade."""
+    and meme coins. Stablecoins are left out: they're pegged to $1, so there's nothing to trade.
+    load=False only reads the saved asset list (no network)."""
     try:
-        market.ensure_assets()
+        if load:
+            market.ensure_assets()
         syms = [s for s in market.db.symbols("crypto") if s.endswith("/USD") and s.split("/")[0] not in T.STABLECOINS]
     except Exception:  # noqa: BLE001 - fall back to the built-in lists
         syms = []

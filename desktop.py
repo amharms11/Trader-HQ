@@ -185,7 +185,13 @@ class App:
             del self.activity[200:]
 
     def settings(self):
-        return T.load_settings()
+        """Settings, with a crypto list of ALL expanded to every coin Alpaca trades right now."""
+        s = T.load_settings()
+        for sec in ("crypto", "crypto_day"):
+            if [x.upper() for x in s[sec]["watchlist"]] == ["ALL"]:
+                s[sec]["watchlist"] = F.crypto_lists(self.market, load=False)["all"]
+                s[sec]["all_coins"] = True
+        return s
 
     def broker(self):
         s = self.settings()
@@ -407,6 +413,10 @@ class App:
     def start_crypto_day(self):
         if self.cday_thread and self.cday_thread.is_alive():
             raise ValueError("Crypto day trading is already running.")
+        try:
+            self.market.ensure_assets()  # so a list of ALL knows every coin Alpaca trades
+        except Exception:  # noqa: BLE001 - the built-in list is used instead
+            pass
         b = self.broker()
         if not T.claude_backend():
             raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
@@ -462,6 +472,10 @@ class App:
     def start_crypto(self):
         if self.crypto_thread and self.crypto_thread.is_alive():
             raise ValueError("The crypto bot is already running.")
+        try:
+            self.market.ensure_assets()
+        except Exception:  # noqa: BLE001
+            pass
         b, s = self.broker(), self.settings()
         if not T.claude_backend():
             raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
@@ -624,7 +638,8 @@ class App:
         cd = s["crypto_day"]
         out["crypto_day"].update({"fast_mode": bool(cd.get("fast_mode")), "fast_plan_every_min": cd.get("fast_plan_every_min"),
                                   "fast_min_target_pct": cd.get("fast_min_target_pct"),
-                                  "around_the_clock": bool(cd.get("around_the_clock")), "max_hold_hours": cd.get("max_hold_hours", 0),
+                                  "around_the_clock": bool(cd.get("around_the_clock")),
+                                  "all_coins": bool(cd.get("all_coins")), "max_hold_hours": cd.get("max_hold_hours", 0),
                                   "close_all": cd.get("close_all_hhmm"), "watchlist": cd["watchlist"],
                                   "coin_lists": self.cached("coin_lists", 3600, lambda: F.crypto_lists(self.market))})
         return out
@@ -1248,7 +1263,7 @@ def make_handler(app, shutdown, restart=lambda: None):
                 if path == "/api/equity":
                     return self._send(200, app.equity(params.get("period", "1M")))
                 if path == "/api/settings":
-                    return self._send(200, {"settings": app.settings(), "defaults": T.DEFAULT_SETTINGS})
+                    return self._send(200, {"settings": T.load_settings(), "defaults": T.DEFAULT_SETTINGS})  # as saved: ALL stays ALL
                 if path == "/api/history":
                     return self._send(200, {"lines": list(reversed(T.history_lines()))[:300]})
             except NeedLive as e:

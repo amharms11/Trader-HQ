@@ -808,9 +808,10 @@ function renderCryptoFast(f) {
 function cryptoDayExtras(b) {
   const lists = b.coin_lists || {blue: [], meme: []};
   const memes = new Set(lists.meme);
-  const coins = el("input", {type: "text", name: "coins", value: (b.watchlist || []).join(", "), oninput: () => note()});
+  const coins = el("input", {type: "text", name: "coins", value: b.all_coins ? "ALL" : (b.watchlist || []).join(", "), oninput: () => note()});
   const noteEl = el("small", {});
   const note = () => {
+    if (coins.value.trim().toUpperCase() === "ALL") { noteEl.textContent = `ALL = every coin Alpaca trades (${(lists.all || []).length} now), kept up to date. Meme coins among them get the meme limits.`; return; }
     const n = coins.value.split(",").map((x) => x.trim().toUpperCase()).filter((x) => memes.has(x)).length;
     noteEl.textContent = n ? `${n} meme coin${n > 1 ? "s" : ""}: smaller trades, wider stops, limited open at once (see Settings > Crypto day trading).` : "";
   };
@@ -839,7 +840,7 @@ function cryptoDayExtras(b) {
       el("button", {class: "btn small", type: "button", onclick: pick(lists.blue)}, "Blue chips"),
       el("button", {class: "btn small", type: "button", onclick: pick(lists.meme)}, "Meme coins"),
       el("button", {class: "btn small", type: "button", onclick: pick([...lists.blue.slice(0, 3), ...lists.meme.slice(0, 3)])}, "Mix"),
-      el("button", {class: "btn small", type: "button", onclick: pick(lists.all || [...lists.blue, ...lists.meme])}, `All Alpaca coins (${(lists.all || [...lists.blue, ...lists.meme]).length})`)),
+      el("button", {class: "btn small", type: "button", onclick: () => { coins.value = "ALL"; note(); }}, `All Alpaca coins (${(lists.all || [...lists.blue, ...lists.meme]).length})`)),
     el("small", {class: "muted"}, "Lists come from Alpaca's tradable coins (US dollar pairs, no stablecoins). Watching more coins means more data for Claude to read each check, so each check costs a little more with an API key."),
     el("p", {class: "hint", style: "margin:0"}, "Blue chips (Bitcoin, Ethereum, Solana...) are steadier and cheaper to trade. Meme coins (Dogecoin, Shiba Inu, Pepe...) can jump or crash 10–20% in a day, many are down 85–95% from their peak, and online hype around them is often paid. Start with blue chips on paper."));
 }

@@ -754,7 +754,7 @@ const LABELS = {
   max_spread_pct: ["Skip contracts with a bid/ask gap over (%)", ""],
   auto_trailing_stop_pct: ["Automatic trailing stop on every stock (%)", "0 = off. Also on the Tools page."],
   mac_notifications: ["Mac notifications", "Alerts, recurring buys and daily summaries pop up on your Mac."],
-  "crypto.watchlist": ["Crypto watchlist", "Coins the crypto bot may buy, like BTC/USD, ETH/USD."],
+  "crypto.watchlist": ["Crypto watchlist", "Coins the crypto bot may buy, like BTC/USD, ETH/USD. ALL = every coin Alpaca trades, kept up to date."],
   "crypto.strategy": ["Crypto strategy", "Your instructions to Claude for crypto, in plain English."],
   "crypto.check_every_min": ["Check every (minutes)", "While the crypto bot is running."],
   "crypto.max_order_usd": ["Largest crypto buy ($)", ""],
@@ -765,7 +765,7 @@ const LABELS = {
   daily_loss_limit_pct: ["Shut off at loss (% of portfolio)", "0 = off. When this bot is down this % of the portfolio today, it shuts off for the day."],
   run_from_hhmm: ["Run from (HHMM, New York)", "E.g. 945 for 9:45 AM. 0 and 0 = any time."],
   run_to_hhmm: ["Run until (HHMM, New York)", "E.g. 1530 for 3:30 PM."],
-  "crypto_day.watchlist": ["Crypto day-trading list", "Coins it may day trade, like BTC/USD, ETH/USD."],
+  "crypto_day.watchlist": ["Crypto day-trading list", "Coins it may day trade, like BTC/USD, ETH/USD. ALL = every coin Alpaca trades, kept up to date."],
   "crypto_day.strategy": ["Crypto day-trading strategy", "Your instructions to Claude for crypto day trades."],
   "crypto_day.check_every_min": ["Search every (minutes)", ""],
   "crypto_day.max_entries_per_day": ["Crypto day trades per day", ""],
@@ -835,6 +835,11 @@ async function openSettings() {
   });
   form.replaceChildren(...sets, el("div", {class: "row"}, el("button", {class: "btn primary", type: "submit"}, "Save settings"), el("span", {class: "msg", id: "settingsMsg"})));
   form.dataset.defaults = JSON.stringify(defaults);
+  for (const sec of ["crypto", "crypto_day"]) {  // one click to trade every coin Alpaca offers
+    const inp = form.querySelector(`fieldset[data-section="${sec}"] input[name="watchlist"]`);
+    if (inp) inp.closest("label").after(el("button", {class: "btn small", type: "button", style: "justify-self:start;align-self:end;margin-bottom:2px",
+      onclick: () => { inp.value = "ALL"; toast("Set to ALL. Press Save settings to keep it."); }}, "Use all Alpaca coins"));
+  }
   $("claudeStatus").textContent = S && S.claude ? "Claude is connected." : "Claude isn't connected yet.";
   $("updateStatus").textContent = updateText(S && S.update);
   if (S && S.remote) {  // on the phone: keys, phone settings and paper/live stay on the Mac
