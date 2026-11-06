@@ -167,7 +167,7 @@ def parse(x):
         return None
 
 
-def check(t, settings, acct, quotes, active, entries_today, losses_today, last_loss_at, held_value, to_close_all, now=None):
+def check(t, settings, acct, quotes, active, entries_today, losses_today, last_loss_at, held_value, to_close_all, now=None, cap=None):
     """Hard limits for arming a crypto swing setup. Returns (ok, reason, order)."""
     c = settings["crypto_day"]
     now = now or time.time()
@@ -198,6 +198,8 @@ def check(t, settings, acct, quotes, active, entries_today, losses_today, last_l
         return False, f"cooling down for {c['cooldown_after_loss_min']} min after a loss", None
     max_amount, max_stop, _ = F.crypto_day_limits(c, sym)
     amount = min(max_amount, c["max_risk_per_trade_usd"] / (stop_pct / 100))
+    if cap and 10 <= cap < amount:  # fit under the auto-approve amount so it's placed without asking
+        amount = float(int(cap))
     rows = [{"symbol": r["symbol"], "status": "open"} for r in active if r["status"] in ACTIVE]
     ok, why, o = F.check_crypto_day({"symbol": sym, "side": "buy", "amount_usd": round(amount, 2), "stop_loss_pct": stop_pct,
                                      "take_profit_pct": take_pct}, settings, acct, quotes, rows, entries_today, to_close_all,
@@ -252,7 +254,7 @@ class Plan(T.Plan):
 
     def check(self, t):
         return check(t, self.settings, self.acct, self.quotes, self.active, self.entries_today, self.losses_today,
-                     self.engine.last_loss_at, self.held, self.to_close_all)
+                     self.engine.last_loss_at, self.held, self.to_close_all, cap=self.size_cap)
 
     def question(self, t, o):
         return (f"Place a limit buy for {T.money(o['amount'])} of {t['symbol']} at {T.money(o['entry'])} for the next "

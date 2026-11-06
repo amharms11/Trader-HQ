@@ -638,7 +638,7 @@ FX.autoPanel = function (box) {
       AUTO_BOTS.map(([k, label]) => el("label", {class: "check", style: "font-weight:500"},
         el("input", {type: "checkbox", checked: !!r[k], disabled: !on || live, onchange: (e) => save({auto_rules: {[k]: e.target.checked}})}), el("span", {}, label)))),
     el("p", {class: "hint", style: "margin:0"}, live ? "In live mode every trade waits for your approval."
-      : on ? "Trades from the ticked bots that pass every limit and are no bigger than this are placed without asking. Bigger ones, and other bots', still wait for your Approve."
+      : on ? "Ticked bots size their buys to fit under this amount, and trades that pass every limit are placed without asking. A buy only waits for your Approve if even the smallest size is over it (e.g. 1 share costs more). Sells and unticked bots still ask."
         : "Off: every trade waits for your Approve.")));
 };
 setInterval(() => {
@@ -783,7 +783,7 @@ function renderFast(f) {
   const done = f.trades.filter((t) => t.status === "closed" && t.result !== "not filled").slice(-5).reverse();
   box.replaceChildren(el("div", {class: "fast-box"},
     el("b", {}, "Fast mode"), f.status ? el("small", {class: "muted", style: "display:block"}, f.status) : null,
-    armed.length ? el("div", {}, el("small", {class: "muted"}, "Armed setups (waiting for the price):"), ...armed)
+    armed.length ? el("div", {}, el("small", {class: "muted"}, "Approved setups: the app buys the moment the price crosses the trigger."), ...armed)
       : el("small", {class: "muted", style: "display:block"}, "No armed setups right now."),
     ...open.map((t) => el("small", {style: "display:block"}, `${t.status === "entering" ? "Buying" : "In trade"}: ${t.qty} ${t.symbol} at ${fmtPrice(t.entry || t.limit)} · stop ${fmtPrice(t.stop)} · target ${fmtPrice(t.target)}${t.minutes_in != null ? ` · ${t.minutes_in} min` : ""}`)),
     ...done.map((t) => el("small", {class: "muted", style: "display:block"}, `${t.symbol} ${t.how || t.result}: `, el("span", {class: tone(t.pnl)}, signed(t.pnl || 0))))));
@@ -795,14 +795,14 @@ function renderCryptoFast(f) {
   const act = (r) => post("/api/crypto-fast/cancel", {id: r.id}, r.status === "buying" ? "Buy cancelled." : "Selling at market.").then(liveTick).catch(() => {});
   const rows = f.active.map((r) => el("div", {class: "lesson"},
     el("div", {class: "grow"},
-      el("p", {}, el("b", {}, r.symbol), r.status === "buying" ? ` waiting to buy ${money(r.amount)} at ${fmtPrice(r.entry)}` : ` in trade from ${fmtPrice(r.entry)}`),
-      el("small", {class: "muted"}, `Sell at ${fmtPrice(r.target)} · stop ${fmtPrice(r.stop)}${r.seconds_left != null ? " · " + mmss(r.seconds_left) + " left" : ""}${r.reason ? " · " + r.reason : ""}`)),
+      el("p", {}, el("b", {}, r.symbol), r.status === "buying" ? ` limit buy placed: ${money(r.amount)} fills if it dips to ${fmtPrice(r.entry)}` : ` in trade from ${fmtPrice(r.entry)}`),
+      el("small", {class: "muted"}, `Sell at ${fmtPrice(r.target)} · stop ${fmtPrice(r.stop)}${r.seconds_left != null ? " · order cancels in " + mmss(r.seconds_left) + " if not filled" : ""}${r.reason ? " · " + r.reason : ""}`)),
     el("button", {class: "btn small", type: "button", onclick: () => (r.status === "buying" || confirm(`Sell the ${r.symbol} swing trade at market now?`)) && act(r)}, r.status === "buying" ? "Cancel" : "Sell now")));
   box.replaceChildren(el("div", {class: "fast-box"},
     el("b", {}, "Fast mode (swings)"),
     el("small", {class: "muted", style: "display:block"}, `Today: `, el("span", {class: tone(f.today_pnl)}, signed(f.today_pnl)), ` before fees · ${f.wins} wins / ${f.losses} losses`),
     f.status ? el("small", {class: "muted", style: "display:block"}, f.status) : null,
-    ...(rows.length ? rows : [el("small", {class: "muted", style: "display:block"}, "No swing trades waiting or open.")]),
+    ...(rows.length ? rows : [el("small", {class: "muted", style: "display:block"}, "No swing orders placed or open.")]),
     ...f.recent.map((r) => el("small", {class: "muted", style: "display:block"}, `${r.symbol} ${r.how}: `, el("span", {class: tone(r.pnl)}, signed(r.pnl || 0))))));
 }
 function cryptoDayExtras(b) {

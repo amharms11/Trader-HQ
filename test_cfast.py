@@ -100,6 +100,14 @@ class CheckTests(Base):
         self.assertEqual(self.ask.call_args[1]["kind"], "crypto_day")
         self.assertIn("ARM swing: buy", p.headline(p.trades[0], o))
 
+    def test_sized_to_fit_auto_approve(self):
+        p = self.plan([setup()])
+        p.size_cap = 325
+        ok, why, o = p.check(p.trades[0])
+        self.assertTrue(ok, why)
+        self.assertEqual(o["amount"], 325)
+        self.assertEqual(T.trade_value("crypto_day", p.trades[0], o), 325)
+
     def test_rejections(self):
         p = self.plan([])
         cases = [(setup(entry_price=60200, stop_price=60000, target_price=61000), "only buys dips"),

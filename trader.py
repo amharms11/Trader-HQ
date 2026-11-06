@@ -354,6 +354,23 @@ def can_auto_approve(settings, kind=None, value=None):
     return value is not None and value <= float(rules.get("max_usd") or 0)
 
 
+def auto_size_cap(settings, kind):
+    """With auto-approve on for this bot (paper only), the slider amount: buys are sized to fit under it so they're
+    placed without asking. None when auto-approve doesn't apply."""
+    if not can_auto_approve(settings) or not (settings.get("auto_rules") or {}).get(AUTO_KINDS.get(kind, kind)):
+        return None
+    cap = float((settings.get("auto_rules") or {}).get("max_usd") or 0)
+    return cap if cap > 0 else None
+
+
+def shrink_qty(t, price, cap, slip_pct=0.0):
+    """A copy of a share-count buy cut down to fit under cap dollars (never below 1 share)."""
+    if not cap or not price or t.get("side") != "buy":
+        return t
+    fit = int(cap / (price * (1 + slip_pct / 100) + 0.01))
+    return dict(t, qty=fit) if 1 <= fit < t.get("qty", 0) else t
+
+
 def trade_value(kind, t, o):
     """Rough dollar size of a checked trade, for the auto-approve limit."""
     o = o or {}
@@ -1345,9 +1362,15 @@ class Plan:
     label = ""
     empty_message = "No trades proposed."
 
+    size_cap = None  # set when auto-approve applies: buys are sized to fit under the slider amount
+
     def __init__(self, broker, settings):
         self.b, self.settings, self.mode = broker, settings, broker.mode
         self.outlook, self.trades, self.note = "", [], ""
+
+    def fit(self, t):
+        """The trade resized to fit size_cap, if this plan sizes by shares or dollars. Default: unchanged."""
+        return t
 
     def headline(self, t, o):
         return f"{t['side'].upper()} {t['qty']} {t['symbol']}"
@@ -1376,6 +1399,10 @@ class LongTermPlan(Plan):
         journal("plan", mode=self.mode, outlook=plan["outlook"], trades=plan["trades"])
         self.outlook, self.trades = plan["outlook"], plan["trades"]
         self.note = "" if self.market_open else CLOSED_NOTE
+
+    def fit(self, t):
+        price = (self.snap["market"].get(t.get("symbol")) or {}).get("latest_price")
+        return shrink_qty(t, price, self.size_cap, self.settings["limit_slippage_pct"])
 
     def check(self, t):
         ok, why, limit_price = check_trade(t, self.snap, self.settings, self.placed_today, self.market_open)
@@ -1413,6 +1440,10 @@ class DayPlan(Plan):
         else:
             extra = " (close the day position)"
         return f"{t['side'].upper()} {o['qty'] if o else t['qty']} {t['symbol']}{extra}"
+
+    def fit(self, t):
+        price = (self.snap["market"].get(t.get("symbol")) or {}).get("latest_price")
+        return shrink_qty(t, price, self.size_cap, self.settings["limit_slippage_pct"])
 
     def check(self, t):
         return check_day_trade(t, self.snap, self.settings)

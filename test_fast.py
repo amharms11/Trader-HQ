@@ -125,6 +125,12 @@ class CheckTests(Base):
         self.assertAlmostEqual(o["risk"], 33 * 0.75)
         self.assertEqual(o["minutes"], 15)
 
+    def test_sized_to_fit_auto_approve(self):
+        ok, why, o = FT.check_setup(setup(), self.snap(), self.s, cap=325)
+        self.assertTrue(ok, why)
+        self.assertEqual(o["qty"], 3)                         # 3 x ~$101 fits under $325 even after the chase allowance
+        self.assertLessEqual(T.trade_value("day", setup(), o), 325)
+
     def test_rejections(self):
         snap = self.snap()
         cases = [(setup(symbol="TSLA"), "watchlist"), (setup(stop_price=101.2), "stop must be below"),

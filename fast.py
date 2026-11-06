@@ -165,7 +165,7 @@ def parse_setup(x):
         return None
 
 
-def check_setup(t, snap, settings):
+def check_setup(t, snap, settings, cap=None):
     """Hard limits for arming a setup. Returns (ok, reason, order) where order holds the shares and prices."""
     d = settings["day"]
     sym, setup = t["symbol"], t["setup"]
@@ -204,6 +204,8 @@ def check_setup(t, snap, settings):
     if setup == "vwap_pullback" and trig < lv["vwap"] * 0.999:
         return False, f"a VWAP pullback needs the trigger above VWAP ({T.money(lv['vwap'])})", None
     qty = int(min(d["max_risk_per_trade_usd"] / (trig - stop), settings["max_order_usd"] / trig))
+    if cap and 1 <= int(cap / (trig * (1 + d["max_chase_pct"] / 100) + 0.01)) < qty:  # fit under auto-approve
+        qty = int(cap / (trig * (1 + d["max_chase_pct"] / 100) + 0.01))
     if qty < 1:
         return False, f"even 1 share risks more than {T.money(d['max_risk_per_trade_usd'])} or costs more than {T.money(settings['max_order_usd'])}", None
     why = T._buy_limits(sym, qty * trig, price, snap["all_holdings"].get(sym, 0), snap["account"], settings)
@@ -245,7 +247,7 @@ class FastPlan(T.Plan):
                 f"(stop {T.money(t['stop_price'])}, target {T.money(t['target_price'])})")
 
     def check(self, t):
-        return check_setup(t, self.snap, self.settings)
+        return check_setup(t, self.snap, self.settings, self.size_cap)
 
     def question(self, t, o):
         return (f"Arm it? For the next {o['minutes']:g} min, the app buys {o['qty']} {t['symbol']} within seconds if it trades "

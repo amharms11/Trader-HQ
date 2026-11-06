@@ -663,6 +663,9 @@ class CryptoPlan(T.Plan):
             return f"BUY {T.money(t['amount_usd'])} of {t['symbol']} (stop -{t['stop_loss_pct']:g}%, target +{t['take_profit_pct']:g}%)"
         return f"SELL {t['sell_fraction'] * 100:.0f}% of your {t['symbol']}"
 
+    def fit(self, t):
+        return fit_amount(t, self.size_cap)
+
     def check(self, t):
         return check_crypto_trade(t, self.settings, self.snap["account"], self.quotes, self.held, self.held_value)
 
@@ -694,6 +697,13 @@ class CryptoPlan(T.Plan):
                              "('waiting_fill','protected','unprotected')", (t["symbol"], self.mode))
             self.held[t["symbol"]] = self.held.get(t["symbol"], 0) - o["qty"]
         return order
+
+
+def fit_amount(t, cap):
+    """A copy of a dollar-amount crypto buy cut down to fit under cap (never below Alpaca's $10 minimum)."""
+    if cap and t.get("side") == "buy" and (t.get("amount_usd") or 0) > cap >= 10:
+        return dict(t, amount_usd=float(int(cap)))
+    return t
 
 
 def parse_crypto_trade(t):
@@ -1022,6 +1032,9 @@ class CryptoDayPlan(T.Plan):
         if t["side"] == "buy":
             return f"BUY {T.money(t['amount_usd'])} of {t['symbol']} (stop -{t['stop_loss_pct']:g}%, target +{t['take_profit_pct']:g}%)"
         return f"SELL your {t['symbol']} day trade"
+
+    def fit(self, t):
+        return fit_amount(t, self.size_cap)
 
     def check(self, t):
         return check_crypto_day(t, self.settings, self.acct, self.quotes, self.open, self.entries_today, self.to_close_all, self.held_value)

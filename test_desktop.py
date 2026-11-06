@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import desktop as D
+import features as F
 import trader as T
 
 
@@ -152,6 +153,39 @@ class ApprovalTests(Base):
         self.app.add_plan(live, ttl=60)
         self.assertEqual(live.placed, [])
         self.assertEqual(self.app.proposals[0]["status"], "pending")
+
+    def test_auto_approve_resizes_buys_to_fit_the_slider(self):
+        s = T.load_settings()
+        s["auto_approve"] = True
+        s["auto_rules"] = {"max_usd": 325, "long_term": True, "day": True, "options": False, "crypto": True}
+
+        class Sized(FakePlan):
+            def fit(self, t):
+                return T.shrink_qty(t, 100.0, self.size_cap)
+        plan = Sized(self.broker, s, [trade(qty=5)])                  # $500 asked for, slider is $325
+        self.app.add_plan(plan, ttl=60)
+        p = self.app.proposals[0]
+        self.assertEqual((p["status"], p["trade"]["qty"]), ("placed", 3))  # 3 x $100 placed without asking
+        self.assertEqual(plan.size_cap, 325)
+        s["auto_rules"]["long_term"] = False                          # bot not ticked: no resizing, asks as before
+        plan2 = Sized(self.broker, s, [trade(qty=5)])
+        self.app.add_plan(plan2, ttl=60)
+        self.assertEqual((self.app.proposals[0]["status"], self.app.proposals[0]["trade"]["qty"]), ("pending", 5))
+
+    def test_size_helpers(self):
+        s = T.load_settings()
+        self.assertIsNone(T.auto_size_cap(s, "day"))                   # auto-approve off
+        s["auto_approve"] = True
+        self.assertEqual(T.auto_size_cap(s, "crypto_day"), s["auto_rules"]["max_usd"])
+        self.assertIsNone(T.auto_size_cap(s, "options"))              # options not ticked by default
+        s["mode"] = "live"
+        self.assertIsNone(T.auto_size_cap(s, "day"))                   # never in live
+        buy = trade(qty=10)
+        self.assertEqual(T.shrink_qty(buy, 100, 250)["qty"], 2)
+        self.assertEqual(T.shrink_qty(buy, 100, 50)["qty"], 10)          # can't fit even 1 share: unchanged (asks)
+        self.assertEqual(T.shrink_qty(dict(buy, side="sell"), 100, 250)["qty"], 10)
+        self.assertEqual(F.fit_amount({"side": "buy", "amount_usd": 500}, 325)["amount_usd"], 325)
+        self.assertEqual(F.fit_amount({"side": "buy", "amount_usd": 500}, 5)["amount_usd"], 500)
 
     def test_auto_approve_slider_and_bots(self):
         s = T.load_settings()

@@ -832,8 +832,10 @@ class App:
         self.plans.insert(0, entry)
         del self.plans[20:]
         self._plan_objects[entry["id"]] = plan
+        plan.size_cap = T.auto_size_cap(s, plan.kind)
         for i, t in enumerate(plan.trades, 1):
             with self.lock:
+                t = plan.fit(t)  # with auto-approve on, buys are sized to fit under the slider amount
                 ok, why, o = plan.check(t)
                 warning = ""
                 if plan.kind in ("run", "day") and t.get("side") == "buy":
