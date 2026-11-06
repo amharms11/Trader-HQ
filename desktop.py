@@ -708,7 +708,7 @@ class App:
         delay = 5
         while not self.stopping.wait(delay):
             info = self.check_updates()
-            delay = 3600 if info.get("error") else 6 * 3600
+            delay = 3600 if info.get("error") else 30 * 60  # a "new version" banner within half an hour
 
     def save_github_token(self, key):
         key = key.strip()

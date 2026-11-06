@@ -874,7 +874,7 @@ function updateText(u) {
   if (!u) return "";
   if (u.error) return "Couldn't check for updates: " + u.error;
   if (u.available) return "A new version is ready. Use Restart now (in the banner, or below) to install it.";
-  if (u.latest) return "You have the latest version (" + u.latest.slice(0, 7) + "). Trader HQ checks GitHub every time it opens.";
+  if (u.latest) return "You have the latest version (" + u.latest.slice(0, 7) + "). Trader HQ checks GitHub when it opens and every 30 minutes.";
   return "Checking for updates…";
 }
 $("githubForm").onsubmit = async (e) => {
