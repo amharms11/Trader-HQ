@@ -73,7 +73,7 @@ FAST_SCHEMA = {
 # ---------- levels from 1-minute bars ----------
 
 def _et(t):
-    return dt.datetime.fromisoformat(str(t).replace("Z", "+00:00")).astimezone(T.ET)
+    return T.parse_time(str(t)).astimezone(T.ET)
 
 
 def levels(bars):
@@ -126,7 +126,7 @@ def age_sec(iso, now=None):
     if not iso:
         return 1e9
     now = now or dt.datetime.now(dt.timezone.utc)
-    return (now - dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))).total_seconds()
+    return (now - T.parse_time(str(iso))).total_seconds()
 
 
 # ---------- Claude arms setups ----------

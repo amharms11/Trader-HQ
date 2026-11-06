@@ -566,7 +566,7 @@ class App:
         positions = self.cached("positions", 4, b.positions)
         orders = self.cached("orders", 4, b.open_orders)
         today = F.today_et()
-        on_day = lambda iso: dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET).date() == today
+        on_day = lambda iso: T.parse_time(iso).astimezone(T.ET).date() == today
         today_fills = [f for f in fills if on_day(f["time"])]
         trades, _ = F.match_trades(fills)
         closed = [t for t in trades if on_day(t["closed"])]

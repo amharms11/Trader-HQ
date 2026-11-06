@@ -90,6 +90,16 @@ class Base(TF.Base):
         return self.eng.store.rows("paper")[-1]
 
 
+class TimeTests(unittest.TestCase):
+    def test_parse_alpaca_times(self):
+        for text in ("2026-11-06T00:36:45.280316119+00:00", "2026-11-06T00:36:45.280316119Z", "2026-11-06T00:36:45.28Z",
+                     "2026-11-06T00:36:45Z", "2026-11-05T19:36:45.123456789-05:00"):
+            t = T.parse_time(text)
+            self.assertEqual((t.hour if t.utcoffset().total_seconds() == 0 else t.astimezone(dt.timezone.utc).hour, t.minute, t.second), (0, 36, 45), text)
+        self.assertEqual(T.parse_time("2026-11-06T00:36:45.280316119Z").microsecond, 280316)
+        self.assertEqual(T.parse_time("2026-11-06T00:36:45.5Z").microsecond, 500000)
+
+
 class CheckTests(Base):
     def test_good_setup_sized_from_risk(self):
         p = self.plan([setup()])
@@ -161,6 +171,15 @@ class EngineTests(Base):
         self.assertAlmostEqual(r["pnl"], 30.0)
         view = self.eng.view("paper")
         self.assertEqual((view["wins"], view["today_pnl"]), (1, 30.0))
+
+    def test_nanosecond_timestamps_from_alpaca(self):
+        self.arm()
+        self.b.book["o1"].update(status="filled", filled_qty="0.05", filled_avg_price="59700")
+        self.eng.tick(self.b, self.s, self.m)
+        nanos = (dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%dT%H:%M:%S.%f") + "119+00:00"
+        self.m.snaps["BTC/USD"] = {"latestTrade": {"p": 59390, "t": nanos}, "latestQuote": {"bp": 59385, "ap": 59395}}
+        self.eng.tick(self.b, self.s, self.m)
+        self.assertEqual(self.row()["how"], "stop-loss")                       # stop still watched
 
     def test_stop_cancels_target_and_sells_at_market(self):
         self.arm()

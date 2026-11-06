@@ -140,7 +140,7 @@ def live_quotes(market, symbols):
 def age_sec(iso):
     if not iso:
         return 1e9
-    return (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))).total_seconds()
+    return (dt.datetime.now(dt.timezone.utc) - T.parse_time(str(iso))).total_seconds()
 
 
 def minute_bars(market, symbols, hours=4):

@@ -107,7 +107,7 @@ def bot_trades(fills, kind):
 
 
 def _et(iso):
-    return dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET)
+    return T.parse_time(iso).astimezone(T.ET)
 
 
 def trade_rows(trades):

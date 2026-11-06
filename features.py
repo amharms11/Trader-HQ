@@ -303,8 +303,8 @@ def match_trades(fills):
         while qty > 1e-12 and queue:
             lot = queue[0]
             take = min(qty, lot["left"])
-            opened = dt.datetime.fromisoformat(lot["time"].replace("Z", "+00:00"))
-            closed_at = dt.datetime.fromisoformat(f["time"].replace("Z", "+00:00"))
+            opened = T.parse_time(lot["time"])
+            closed_at = T.parse_time(f["time"])
             closed.append({"symbol": f["symbol"], "strategy": lot["strategy"], "qty": take, "buy_price": lot["price"],
                            "sell_price": f["price"], "cost": take * lot["price"] * mult, "proceeds": take * f["price"] * mult,
                            "pnl": take * (f["price"] - lot["price"]) * mult, "opened": lot["time"], "closed": f["time"],
@@ -368,7 +368,7 @@ def performance(broker, market, period="3M"):
     fills = fetch_fills(broker)
     trades, open_lots = match_trades(fills)
     cutoff = points[0][0] if points and period != "ALL" else 0
-    trades = [t for t in trades if dt.datetime.fromisoformat(t["closed"].replace("Z", "+00:00")).timestamp() >= cutoff]
+    trades = [t for t in trades if T.parse_time(t["closed"]).timestamp() >= cutoff]
     by = {}
     for t in trades:
         by.setdefault(t["strategy"], []).append(t)
@@ -407,10 +407,10 @@ def daily_summary(broker, day=None):
     acct = broker.account()
     equity, last = float(acct["equity"]), float(acct["last_equity"])
     fills = [f for f in fetch_fills(broker, max_pages=2)
-             if dt.datetime.fromisoformat(f["time"].replace("Z", "+00:00")).astimezone(T.ET).date() == day]
+             if T.parse_time(f["time"]).astimezone(T.ET).date() == day]
     trades, _ = match_trades(fetch_fills(broker, max_pages=4))
     closed_today = [t for t in trades
-                    if dt.datetime.fromisoformat(t["closed"].replace("Z", "+00:00")).astimezone(T.ET).date() == day]
+                    if T.parse_time(t["closed"]).astimezone(T.ET).date() == day]
     positions = [{"symbol": p["symbol"], "qty": float(p["qty"]), "pl": float(p["unrealized_pl"]),
                   "pl_pct": float(p["unrealized_plpc"]) * 100, "today_pct": float(p.get("change_today") or 0) * 100}
                  for p in broker.positions()]
@@ -454,7 +454,7 @@ def daily_pl(broker):
     if last > 0 and (today_et().weekday() < 5 or abs(equity - last) > 0.005):
         days[today] = {"date": today, "change": equity - last, "pct": (equity / last - 1) * 100, "equity": equity, "live": True}
     fills = fetch_fills(broker, max_pages=6)
-    to_day = lambda iso: dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET).date().isoformat()
+    to_day = lambda iso: T.parse_time(iso).astimezone(T.ET).date().isoformat()
     for f in fills:
         d = days.setdefault(to_day(f["time"]), {"date": to_day(f["time"]), "change": None, "pct": None, "equity": None})
         d["fills"] = d.get("fills", 0) + 1
@@ -917,7 +917,7 @@ def run_recurring(store, broker, market, settings, live_ok, today=None):
 def bot_pl_today(fills, strategy, prices, today=None):
     """A bot's profit or loss today: closed trades it opened, plus open ones it opened today at current prices."""
     today = (today or today_et()).isoformat()
-    on_day = lambda iso: dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(T.ET).date().isoformat() == today
+    on_day = lambda iso: T.parse_time(iso).astimezone(T.ET).date().isoformat() == today
     trades, lots = match_trades(fills)
     realized = sum(t["pnl"] for t in trades if t["strategy"] == strategy and on_day(t["closed"]))
     unrealized = 0.0

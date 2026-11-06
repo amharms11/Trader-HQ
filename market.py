@@ -72,7 +72,7 @@ def clean_name(name):
 
 
 def iso_to_unix(ts):
-    return int(dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    return int(T.parse_time(ts).timestamp())
 
 
 def num(x, default=None):

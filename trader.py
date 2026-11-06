@@ -35,6 +35,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -328,6 +329,19 @@ AUTO_KINDS = {"run": "long_term", "day": "day", "options": "options", "crypto": 
 def hhmm_minutes(v):
     v = int(v or 0)
     return (v // 100) * 60 + v % 100
+
+
+_FRACTION = re.compile(r"\.(\d+)")
+
+
+def parse_time(value):
+    """An ISO time from Alpaca as a datetime. Alpaca sends up to 9 digits of fractional seconds (nanoseconds) and
+    "Z" for UTC; older Pythons only read exactly 3 or 6 digits and no "Z", so normalise first."""
+    text = str(value).strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    text = _FRACTION.sub(lambda m: "." + (m.group(1) + "000000")[:6], text, count=1)
+    return dt.datetime.fromisoformat(text)
 
 
 def in_run_window(section, now=None):
@@ -1348,8 +1362,8 @@ def journal(event, **data):
 
 
 def minutes_until_close(clock):
-    now = dt.datetime.fromisoformat(clock["timestamp"].replace("Z", "+00:00"))
-    close = dt.datetime.fromisoformat(clock["next_close"].replace("Z", "+00:00"))
+    now = parse_time(clock["timestamp"])
+    close = parse_time(clock["next_close"])
     return int((close - now).total_seconds() // 60)
 
 
