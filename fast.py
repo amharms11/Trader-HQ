@@ -232,7 +232,7 @@ class FastPlan(T.Plan):
         armed = [{"symbol": a["symbol"], "setup": a["setup"], "trigger": a["trigger"]} for a in engine.armed_list()]
         prompt = (f"<strategy>\n{d['strategy']}\n</strategy>\n\n<setups_allowed>{', '.join(allowed)}</setups_allowed>\n\n"
                   f"<watchlist>{', '.join(d['watchlist'])}</watchlist>\n\n<limits>\n{json.dumps(limits)}\n</limits>\n\n"
-                  f"<already_armed>\n{json.dumps(armed)}\n</already_armed>\n\n"
+                  f"<already_armed>\n{json.dumps(armed)}\n</already_armed>\n\n" + T.premarket_block(d) +
                   f"<snapshot>\n{json.dumps({k: v for k, v in self.snap.items() if k != 'all_holdings'}, indent=1)}\n</snapshot>\n\n"
                   "Arm setups for the next few minutes (or none). Don't repeat ones already armed.")
         plan = T.ask_claude(prompt, FAST_SYSTEM, FAST_SCHEMA, effort="medium", kind="day", raw=True)

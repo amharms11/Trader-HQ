@@ -25,6 +25,7 @@ from pathlib import Path
 
 import cfast as CF
 import fast as FT
+import premarket as PM
 import features as F
 import learn as L
 import market as M
@@ -175,6 +176,7 @@ class App:
         self.fast_gen = 0                        # each day-trading start gets its own fast loop
         self._cfast = None
         self.in_play = None                      # the latest "stocks in play" scan for day trading
+        self.premarket = None                    # today's premarket watch: gappers, headlines, game plan
         self.reviewer = L.AutoReviewer()         # each bot reviews its own trades once a day
         T.knowledge_hook = L.make_hook(self.settings, lambda: self.lessons, lambda: self.settings()["mode"])
 
@@ -610,6 +612,7 @@ class App:
                          if norm(sy) == norm(sym)],
             "bots": self._bots_today(),
             "in_play": self.in_play,
+            "premarket": self.premarket if self.premarket and self.premarket.get("date") == dt.datetime.now(T.ET).date().isoformat() else None,
             "fast": self.fast.view(self.day_state) if self.settings()["day"].get("fast_mode") or self.fast.armed else None,
             "crypto_fast": self.cfast.view(b.mode) if self.settings()["crypto_day"].get("fast_mode") or self.cfast.store.rows(b.mode, CF.ACTIVE) else None,
             "score": {"closed": len(closed), "wins": sum(1 for t in closed if t["pnl"] > 0),
@@ -636,7 +639,7 @@ class App:
                         "run_from": sec.get("run_from_hhmm", 0), "run_to": sec.get("run_to_hhmm", 0),
                         "every": sec.get("check_every_min")}
         dd = s["day"]
-        out["day"].update({k: dd.get(k) for k in ("fast_mode", "fast_orb", "fast_vwap_pullback", "time_stop_min", "fast_plan_every_min", "scan_all", "scan_top")})
+        out["day"].update({k: dd.get(k) for k in ("fast_mode", "fast_orb", "fast_vwap_pullback", "time_stop_min", "fast_plan_every_min", "scan_all", "scan_top", "premarket_watch")})
         cd = s["crypto_day"]
         out["crypto_day"].update({"fast_mode": bool(cd.get("fast_mode")), "fast_plan_every_min": cd.get("fast_plan_every_min"),
                                   "fast_min_target_pct": cd.get("fast_min_target_pct"),
@@ -976,8 +979,9 @@ class App:
         s = self.settings()
         if not T.claude_backend():
             raise ValueError("Claude isn't set up yet: sign in to Claude Code on this Mac (run `claude` once).")
-        if not b.clock()["is_open"]:
-            raise ValueError("The market is closed. Day trading runs 9:30am-4pm ET on weekdays.")
+        if not b.clock()["is_open"] and not self.premarket_today(b, s):
+            raise ValueError("The market is closed. Day trading runs 9:30am-4pm ET on weekdays"
+                             + (", and can start from 4am ET to watch the premarket." if s["day"].get("premarket_watch") else "."))
         state = T.load_day_state(b)
         if state["flattened"]:
             raise ValueError("Day trading already finished for today (positions were closed).")
@@ -997,6 +1001,15 @@ class App:
         try:
             while not self.day_stop.is_set() and not self.stopping.is_set():
                 sec = self.settings()["day"]
+                try:
+                    pre = not b.clock()["is_open"] and self.premarket_today(b, self.settings())
+                except RuntimeError:
+                    pre = False
+                if pre:  # before the open: watch the premarket, don't trade
+                    self.day_next = None
+                    self.premarket_step(self.settings())
+                    self.day_stop.wait(min(sec["premarket_every_min"] * 60, PM.minutes_to_open() * 60 + 5, 60))
+                    continue
                 gate = self.bot_gate("day", sec)
                 if gate == "goal" and self.due("day-goal-log", 3600):
                     self.log("Day trading: " + self.bot_status["day"] + ". Day trades still close before the bell, then it stops.")
@@ -1034,10 +1047,51 @@ class App:
             self.day_next = None
             self.forget()
 
+    def premarket_today(self, b, s):
+        """True between 4:00 and 9:30 AM ET on a trading day, with the premarket watch turned on."""
+        if not s["day"].get("premarket_watch") or not PM.is_premarket():
+            return False
+        nxt = b.clock().get("next_open")
+        return bool(nxt) and T.parse_time(nxt).astimezone(T.ET).date() == dt.datetime.now(T.ET).date()
+
+    def premarket_step(self, s):
+        """Rescan premarket gappers every few minutes; write the game plan once at the plan time."""
+        d, now_et = s["day"], dt.datetime.now(T.ET)
+        today = now_et.date().isoformat()
+        pm = self.premarket if self.premarket and self.premarket.get("date") == today else None
+        self.bot_status["day"] = f"Premarket: watching gappers. Trading starts at 9:30 ({PM.minutes_to_open()} min)."
+        if pm is None or now() - pm["time"] >= d["premarket_every_min"] * 60 - 5:
+            try:
+                fresh = PM.scan(self.market, d)
+            except Exception as e:  # noqa: BLE001 - tried again next time
+                if self.due("premarket-error", 600):
+                    self.log(f"Premarket scan skipped: {e}")
+                return
+            fresh["plan"] = (pm or {}).get("plan")
+            self.premarket = pm = fresh
+            ups = pm["rows"]
+            self.log(f"Premarket: scanned {pm['scanned']:,} stocks. " + (
+                "Gap-ups: " + ", ".join(f"{r['symbol']} +{r['gap_pct']:g}%" for r in ups[:5]) + (f" and {len(ups) - 5} more" if len(ups) > 5 else "") + "."
+                if ups else "No liquid gap-ups yet."))
+        at = d.get("premarket_plan_at") or 0
+        if at and not pm.get("plan") and pm["rows"] and now_et.hour * 100 + now_et.minute >= at:
+            try:
+                pm["plan"] = PM.game_plan(pm)
+                self.notify("Premarket game plan", pm["plan"], "summary")
+            except Exception as e:  # noqa: BLE001
+                pm["plan"] = ""
+                self.log(f"Premarket game plan skipped: {e}")
+
     def with_stocks_in_play(self, s):
-        """With 'scan all stocks' on, scan every listed stock and add the top stocks in play to this check's
-        day-trading watchlist (your own list stays in too)."""
+        """Add today's premarket gappers (with their levels) and, with 'scan all stocks' on, the top stocks in
+        play to this check's day-trading watchlist. Your own list stays in too."""
         d = s["day"]
+        pm = self.premarket if self.premarket and self.premarket.get("date") == dt.datetime.now(T.ET).date().isoformat() else None
+        if pm and d.get("premarket_watch") and pm["rows"]:
+            s = json.loads(json.dumps(s))
+            d = s["day"]
+            d["watchlist"] = list(dict.fromkeys(d["watchlist"] + [r["symbol"] for r in pm["rows"]]))
+            d["premarket_levels"] = PM.levels_for_day(pm)
         if not d.get("scan_all"):
             self.in_play = None
             return s

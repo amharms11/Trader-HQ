@@ -97,6 +97,15 @@ DEFAULT_SETTINGS = {
         "max_take_profit_pct": 6,
         "no_new_entries_min_before_close": 30,
         "flatten_min_before_close": 10,  # sell all day positions this many minutes before the close
+        # Premarket watch: started before the open (4:00-9:30 AM ET), day trading scans for premarket gappers,
+        # gathers their headlines for you, has Claude write a game plan, then trades them from the open.
+        "premarket_watch": True,
+        "premarket_every_min": 10,
+        "premarket_min_gap_pct": 3,        # gap vs. yesterday's close
+        "premarket_min_price": 5,
+        "premarket_min_dollar_volume_m": 1,  # $ millions traded premarket (estimated for the whole market)
+        "premarket_top": 8,                # gap-ups to watch at the open
+        "premarket_plan_at": 915,          # when Claude writes the game plan (HHMM ET); 0 = no plan
         # Scan all stocks: before each check, code scans every stock Alpaca lists and adds the top "stocks in
         # play" (busy, moving up on unusual volume) to the watchlist for that check.
         "scan_all": False,
@@ -754,8 +763,18 @@ def build_day_prompt(snap, settings):
     return (f"<strategy>\n{d['strategy']}\n</strategy>\n\n"
             f"<watchlist>{', '.join(d['watchlist'])}</watchlist>\n\n"
             f"<limits>\n{json.dumps(limits)}\n</limits>\n\n"
+            + premarket_block(d) +
             f"<snapshot>\n{json.dumps(shown, indent=1)}\n</snapshot>\n\n"
             "Propose day-trade actions for right now (or none).")
+
+
+def premarket_block(d):
+    """Today's premarket gappers and their levels (numbers only), when the premarket watch found some."""
+    if not d.get("premarket_levels"):
+        return ""
+    return ("<premarket_levels>\nToday's premarket gap-ups (vs. yesterday's close), with premarket high and low. Common "
+            "setups: a break above the premarket high after the first minutes, or a hold above VWAP. Big gaps often fade "
+            f"early.\n{json.dumps(d['premarket_levels'], indent=1)}\n</premarket_levels>\n\n")
 
 
 # ---------- what the bots know ----------

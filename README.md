@@ -123,6 +123,17 @@ The **Live** tab is for watching the bot work:
 
 Bigger trades, and trades from bots you didn't tick, still wait for your Approve. All the normal limits still apply. In live mode, every trade always asks.
 
+## Premarket watch (stock day trading)
+Start day trading any time from **4:00 AM ET** with **Watch the premarket** on (Live → Day trading → Goals & hours, on by default). Until the 9:30 open:
+
+- **Every 10 minutes:** it scans every stock for **gap-ups**, meaning prices well above yesterday's close (3% or more by default). It keeps the ones that are $5 or more and actually trading premarket, and measures each one's premarket high, low and volume.
+- **Headlines, for you:** it gathers each gapper's latest news and shows it on the Live tab. **Claude never reads the headlines.** A headline could be written to steer an AI, so Claude only learns how many headlines a stock has.
+- **At 9:15:** Claude writes a short **game plan** from the numbers: which gappers to watch and at what level. The plan also goes to your phone if notifications are on.
+- **Nothing is bought before the open.**
+- **At 9:30:** the gappers join the day's watchlist. Claude sees their premarket high and low, which setups like "break above the premarket high" use.
+
+You can change the filters in Settings → Day trading.
+
 ## Fast mode (stock day trading)
 Day trading happens on the live 1- and 5-minute charts, but Claude takes too long to answer to react to every tick. Fast mode splits the job:
 
@@ -329,7 +340,7 @@ You can leave out any setting to keep its default. Settings inside `day` and `op
 
 ## Tests
 ```bash
-python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py test_fast.py test_cfast.py
+python -m unittest test_trader.py test_desktop.py test_market.py test_updater.py test_features.py test_phone.py test_learn.py test_fast.py test_cfast.py test_premarket.py
 ```
 No network or keys needed.
 

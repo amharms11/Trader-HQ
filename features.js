@@ -548,6 +548,7 @@ async function liveTick(first) {
   for (const key of ["day", "crypto", "crypto_day"]) botConfig(key, d.bots && d.bots[key]);
   renderFast(d.fast);
   renderInPlay(d.in_play);
+  renderPremarket(d.premarket);
   renderCryptoFast(d.crypto_fast);
   const sc = d.score, stat = (k, v, cls) => el("div", {class: "stat"}, el("span", {}, k), el("b", {class: cls || ""}, v));
   document.getElementById("liveScore").replaceChildren(
@@ -734,7 +735,7 @@ function botConfig(key, b) {
       run_from_hhmm: from, run_to_hhmm: (f.from.value && f.to.value) ? to : from, check_every_min: f.every.value};
     if (cday) Object.assign(patch, {around_the_clock: f.nonstop.checked, max_hold_hours: f.hold.value || 0, watchlist: f.coins.value,
       fast_mode: f.cfast.checked, fast_plan_every_min: f.cfplan.value || 5});
-    if (dayBot) Object.assign(patch, {scan_all: f.scanall.checked, fast_mode: f.fast.checked, fast_orb: f.orb.checked, fast_vwap_pullback: f.vwap.checked,
+    if (dayBot) Object.assign(patch, {premarket_watch: f.premarket.checked, scan_all: f.scanall.checked, fast_mode: f.fast.checked, fast_orb: f.orb.checked, fast_vwap_pullback: f.vwap.checked,
       time_stop_min: f.tstop.value || 0, fast_plan_every_min: f.fplan.value || 5});
     try {
       await api("/api/settings", {settings: {[key]: patch}});
@@ -761,6 +762,8 @@ function botConfig(key, b) {
 
 function fastExtras(b) {
   return el("div", {class: "crypto-extras"},
+    el("label", {class: "check"}, el("input", {type: "checkbox", name: "premarket", checked: b.premarket_watch !== false}),
+      el("span", {}, "Watch the premarket", el("small", {style: "display:block"}, "Start day trading any time from 4am ET: until the 9:30 open it scans for gap-ups every 10 minutes, gathers their headlines for you, and has Claude write a game plan at 9:15. No trades before the open. At 9:30 the gappers join the watchlist with their premarket high and low."))),
     el("label", {class: "check"}, el("input", {type: "checkbox", name: "scanall", checked: !!b.scan_all}),
       el("span", {}, "Scan all stocks for stocks in play", el("small", {style: "display:block"}, `Before each check, the app scans every stock Alpaca lists (code only, no Claude cost) and adds the top ${b.scan_top || 10} that are moving up on unusual volume: price $5+, heavily traded, volume 2x+ normal for the time of day. Your own watchlist stays in too. Filters are in Settings > Day trading.`))),
     el("label", {class: "check"}, el("input", {type: "checkbox", name: "fast", checked: !!b.fast_mode}),
@@ -772,6 +775,25 @@ function fastExtras(b) {
       el("label", {}, "Claude looks for setups every (min)", el("input", {type: "number", name: "fplan", min: 2, max: 60, step: 1, value: b.fast_plan_every_min || 5})),
       el("label", {}, "Sell a fast trade after (min)", el("small", {}, "0 = hold until target, stop or the close"), el("input", {type: "number", name: "tstop", min: 0, max: 390, step: 1, value: b.time_stop_min ?? 45}))),
     el("p", {class: "hint", style: "margin:0"}, "Built-in safety: no chasing a price that already ran past the trigger, no wide spreads or stale prices, a 15-minute pause after a loss, and no new fast trades after 3 losses in a day. Change these in Settings > Day trading."));
+}
+function renderPremarket(p) {
+  let box = document.getElementById("livePremarket");
+  if (!box) { const anchor = document.getElementById("liveFast"); if (!anchor) return; box = el("div", {id: "livePremarket"}); anchor.before(box); }
+  if (!p) { box.replaceChildren(); return; }
+  const when = (t) => new Date(t * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+  const link = (n) => (n.url && /^https?:/.test(n.url)) ? el("a", {href: n.url, target: "_blank", rel: "noopener noreferrer"}, n.headline) : n.headline;
+  const row = (r) => el("div", {class: "lesson"}, el("div", {class: "grow"},
+    el("p", {}, el("a", {href: "#s/" + enc(r.symbol)}, el("b", {}, r.symbol)), ` ${r.gap_pct > 0 ? "+" : ""}${r.gap_pct}% · ${fmtPrice(r.price)}`,
+      el("small", {class: "muted"}, ` · premarket high ${fmtPrice(r.pm_high)}, low ${fmtPrice(r.pm_low)} · ~$${r.pm_dollar_volume_m}M traded`)),
+    ...(r.news || []).map((n) => el("small", {style: "display:block"}, "News: ", link(n), el("span", {class: "muted"}, ` · ${n.source || ""}`))),
+    r.news && !r.news.length ? el("small", {class: "muted", style: "display:block"}, "No headlines today: moves without news are riskier.") : null));
+  box.replaceChildren(el("div", {class: "fast-box"},
+    el("b", {}, "Premarket"),
+    el("small", {class: "muted", style: "display:block"}, `Scanned ${p.scanned.toLocaleString()} stocks at ${when(p.time)}. Headlines are for you; Claude only sees prices and how many headlines there are.`),
+    p.plan ? el("div", {class: "md", style: "font-size:14px"}, el("b", {}, "Claude's game plan"), ...FX.mdRender(p.plan)) : null,
+    ...(p.rows.length ? p.rows.map(row) : [el("small", {class: "muted", style: "display:block"}, "No liquid gap-ups yet.")]),
+    p.gap_downs && p.gap_downs.length ? el("small", {class: "muted", style: "display:block"}, "Gapping down (not traded, the bot only buys): " +
+      p.gap_downs.map((r) => `${r.symbol} ${r.gap_pct}%`).join(", ")) : null));
 }
 function renderInPlay(p) {
   let box = document.getElementById("liveInPlay");
