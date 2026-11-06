@@ -131,6 +131,16 @@ class ApprovalTests(Base):
         self.assertEqual(self.app.decide(self.app.proposals[0]["id"], True)["status"], "blocked")
         self.assertEqual(plan.placed, [])
 
+    def test_crypto_approved_while_stock_market_closed(self):
+        for kind in ("crypto", "crypto_day"):
+            plan = FakePlan(self.broker, T.load_settings(), [trade("BTC/USD")])
+            plan.kind = kind
+            self.app.add_plan(plan, ttl=60)
+            self.broker.is_open = False
+            pid = next(p["id"] for p in self.app.proposals if p["status"] == "pending")
+            self.assertEqual(self.app.decide(pid, True)["status"], "placed", kind)
+            self.assertEqual(plan.placed, ["BTC/USD"])
+
     def test_auto_approve_paper_only(self):
         s = T.load_settings()
         s["auto_approve"] = True

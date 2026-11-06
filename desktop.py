@@ -43,6 +43,7 @@ STATIC = {"/assets/favicon.png": ("assets/favicon.png", "image/png"),
           "/market.js": ("market.js", "text/javascript; charset=utf-8"),
           "/features.js": ("features.js", "text/javascript; charset=utf-8"),
           "/vendor/lightweight-charts.js": ("vendor/lightweight-charts.js", "text/javascript; charset=utf-8")}
+CRYPTO_KINDS = ("crypto", "crypto_day")  # plans that trade 24/7, so the stock market clock doesn't apply
 DAY_TTL = 180          # seconds a day-trade suggestion can be approved before it goes stale
 PLAN_TTL = 30 * 60     # seconds a long-term or options suggestion can be approved
 PERIODS = {"1W": ("1W", "1H"), "1M": ("1M", "1D"), "3M": ("3M", "1D"), "1Y": ("1A", "1D")}
@@ -879,8 +880,8 @@ class App:
                 p["status"], p["result"] = "skipped", "Skipped."
                 T.journal("skipped", mode=plan.mode, trade=p["trade"])
                 return self.public(p)
-            if not plan.b.clock()["is_open"]:
-                p["status"], p["why"] = "blocked", "the market is closed"
+            if plan.kind not in CRYPTO_KINDS and not plan.b.clock()["is_open"]:  # crypto trades 24/7
+                p["status"], p["why"] = "blocked", "the stock market is closed"
                 return self.public(p)
             ok, why, o = plan.check(p["trade"])  # check again: earlier approvals may have used the room
             if not ok:
